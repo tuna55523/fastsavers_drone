@@ -1,0 +1,13 @@
+{
+  "typeCheckingMode": "basic",
+  "reportGeneralTypeIssues": "none",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingParameterType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownLambdaType": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownParameterType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnusedCallResult": "none"
+}
