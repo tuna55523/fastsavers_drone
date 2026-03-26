@@ -1,0 +1,82 @@
+MODEL_PATH = "models/active_model.pt"
+POSE_MODEL_PATH = "models/yolo11s-pose.pt"
+POSE_MODEL_ID = "yolo11s-pose.pt"
+POSE_AUTO_DOWNLOAD = False
+POSE_FALLBACK_MODEL_PATH = "models/yolo11n-pose.pt"
+
+RUN_MODE = "sim"  # "real" or "sim"
+SIM_VIDEO_PATH = "videos/video8.mp4"
+SIM_LOOP_VIDEO = True
+SIM_COMMAND_LOG_PATH = "logs/sim_commands.csv"
+
+CONF_THRESHOLD = 0.4
+POSE_ENABLED = True
+POSE_CONF_THRESHOLD = 0.25
+POSE_MIN_KEYPOINT_CONF = 0.25
+POSE_INFER_EVERY_N_FRAMES = 2
+POSE_DRAW_OVERLAY = True
+POSE_RUN_ON_CROPS = True
+POSE_BATCH_INFERENCE = True
+POSE_CROP_EXPAND = 0.18
+POSE_CROP_MIN_SIDE = 80
+POSE_TEMPORAL_SMOOTH = 0.68
+POSE_MAX_JUMP_NORM = 0.55
+POSE_MAX_BONE_RATIO = 2.8
+POSE_LOW_QUALITY_HOLD_FRAMES = 4
+
+FRAME_WIDTH = 960
+FRAME_HEIGHT = 720
+
+TARGET_AREA = 85000
+
+# Risk v2 thresholds
+RISK_ENTER_RESCUE = 0.72
+RISK_EXIT_RESCUE = 0.55
+RISK_WINDOW = 20
+RISK_WARMUP_FRAMES = 4
+RISK_MAX_MATCH_DIST = 140
+
+# Risk persistence (anti-flicker)
+RISK_WATCH_ENTER = 0.42
+RISK_WATCH_EXIT = 0.32
+RISK_ALERT_ENTER = 0.64
+RISK_ALERT_EXIT = 0.52
+RISK_WATCH_ENTER_SECONDS = 0.7
+RISK_ALERT_ENTER_SECONDS = 1.2
+RISK_EXIT_SECONDS = 1.2
+
+# Fast distress path (for early drowning suspicion)
+RISK_FAST_WATCH = 0.50
+RISK_FAST_ALERT = 0.68
+RISK_FAST_WATCH_SECONDS = 0.35
+RISK_FAST_ALERT_SECONDS = 0.25
+RISK_FAST_WATCH_ACUTE = 0.56
+RISK_FAST_ALERT_ACUTE = 0.70
+RISK_MIN_RAW_FOR_ALERT = 0.60
+
+# Operator policy (UX/operations)
+ACTION_SAFE = "MONITOR"
+ACTION_WATCH = "APPROACH + OBSERVE"
+ACTION_ALERT = "RESCUE NOW"
+
+# Benchmark defaults
+BENCHMARK_LABELS_PATH = "benchmarks/labels.json"
+BENCHMARK_OUTPUT_DIR = "logs"
+BENCHMARK_ALERT_STATE = "ALERT"
+BENCHMARK_RESIZE = True
+
+# Runtime performance tuning
+BATTERY_POLL_INTERVAL_SEC = 1.0
+
+# Water-region gating for person detection (helps reduce false positives above waterline)
+WATER_FILTER_ENABLED = False
+WATER_LINE_RATIO = 0.55
+
+IGNORE_CLASSES = [
+    "surfboard",
+    "boat",
+    "kite",
+    "bird",
+    "dog",
+    "chair"
+]

@@ -1,0 +1,14 @@
+{
+  "videos": [
+    {
+      "name": "video8",
+      "path": "videos/video8.mp4",
+      "label": "drowning"
+    },
+    {
+      "name": "video12",
+      "path": "videos/video12.mp4",
+      "label": "swimming"
+    }
+  ]
+}

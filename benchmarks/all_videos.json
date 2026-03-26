@@ -1,0 +1,56 @@
+{
+  "videos": [
+    {
+      "name": "video1",
+      "path": "videos\\video1.mp4"
+    },
+    {
+      "name": "video10",
+      "path": "videos\\video10.mp4"
+    },
+    {
+      "name": "video11",
+      "path": "videos\\video11.mp4"
+    },
+    {
+      "name": "video12",
+      "path": "videos\\video12.mp4"
+    },
+    {
+      "name": "video13",
+      "path": "videos\\video13.mp4"
+    },
+    {
+      "name": "video2",
+      "path": "videos\\video2.mp4"
+    },
+    {
+      "name": "video3",
+      "path": "videos\\video3.mp4"
+    },
+    {
+      "name": "video4",
+      "path": "videos\\video4.mp4"
+    },
+    {
+      "name": "video5",
+      "path": "videos\\video5.mp4"
+    },
+    {
+      "name": "video6",
+      "path": "videos\\video6.mp4"
+    },
+    {
+      "name": "video7",
+      "path": "videos\\video7.mp4"
+    },
+    {
+      "name": "video8",
+      "path": "videos\\video8.mp4"
+    },
+    {
+      "name": "video9",
+      "path": "videos\\video9.mp4"
+    }
+  ]
+}
