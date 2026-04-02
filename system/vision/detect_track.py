@@ -406,6 +406,8 @@ class DetectTrackSystem:
                 persons,
                 key=lambda p: (
                     rank.get(p.get("alert_state", "SAFE"), 0),
+                    p.get("acute_distress", 0.0),
+                    p.get("risk_rise_rate", 0.0),
                     p.get("risk", 0.0),
                 ),
             )
@@ -416,6 +418,7 @@ class DetectTrackSystem:
             raw_risk = p.get("raw_risk", risk)
             alert_state = p.get("alert_state", "SAFE")
             acute = p.get("acute_distress", 0.0)
+            rise = p.get("risk_rise_rate", 0.0)
             pose_q = p.get("features", {}).get("pose_quality", 0.0)
             pose_f = p.get("features", {}).get("pose_flail", 0.0)
             pose_s = p.get("features", {}).get("pose_stability", 0.0)
@@ -432,7 +435,7 @@ class DetectTrackSystem:
 
             cv2.putText(
                 frame,
-                f"ID:{p['id']} R:{risk:.2f} RAW:{raw_risk:.2f} AD:{acute:.2f} PQ:{pose_q:.2f} PF:{pose_f:.2f} PS:{pose_s:.2f} {alert_state}",
+                f"ID:{p['id']} R:{risk:.2f} RAW:{raw_risk:.2f} RR:{rise:.2f}/s AD:{acute:.2f} PQ:{pose_q:.2f} PF:{pose_f:.2f} PS:{pose_s:.2f} {alert_state}",
                 (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
