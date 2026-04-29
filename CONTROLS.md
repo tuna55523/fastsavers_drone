@@ -1,5 +1,8 @@
 # Controls Guide
 
+Get battery:
+python -c "from system.drone.drone_controller import DroneController as D; d=D(); print('Battery:', d.get_battery(), '%'); d.close()"
+
 This project has two operation modes:
 
 - `MANUAL` (operator RC control)
