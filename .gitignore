@@ -1,6 +1,27 @@
-@"
 .venv/
 __pycache__/
 *.pyc
+
+# Python/cache
+.pytest_cache/
+.mypy_cache/
+
+# Logs and runtime outputs
 logs/
-"@ | Set-Content .gitignore
+*.log
+
+# Gradle/Android local caches and build outputs
+.gradle/
+.gradle-local/
+**/.gradle/
+**/build/
+**/.cxx/
+**/local.properties
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+.DS_Store

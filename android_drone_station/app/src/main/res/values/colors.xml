@@ -1,0 +1,10 @@
+<resources>
+    <color name="primary">#2563EB</color>
+    <color name="onPrimary">#FFFFFF</color>
+    <color name="primaryContainer">#DBEAFE</color>
+    <color name="onPrimaryContainer">#0F172A</color>
+    <color name="secondary">#0EA5E9</color>
+    <color name="onSecondary">#FFFFFF</color>
+    <color name="surface">#F8FAFC</color>
+    <color name="onSurface">#0F172A</color>
+</resources>
