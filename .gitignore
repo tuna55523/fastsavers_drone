@@ -13,6 +13,7 @@ logs/
 # Gradle/Android local caches and build outputs
 .gradle/
 .gradle-local/
+.android-local/
 **/.gradle/
 **/build/
 **/.cxx/

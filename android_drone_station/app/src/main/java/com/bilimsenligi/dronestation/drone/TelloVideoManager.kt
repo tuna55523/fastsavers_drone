@@ -1,12 +1,14 @@
 ﻿package com.bilimsenligi.dronestation.drone
 
 import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.SystemClock
 import android.view.Surface
 import android.view.TextureView
+import java.io.ByteArrayOutputStream
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -15,6 +17,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetSocketAddress
 import java.net.SocketException
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -56,7 +59,11 @@ class TelloVideoManager(
     private val running = AtomicBoolean(false)
     private val recording = AtomicBoolean(false)
     private val recordLock = Any()
+    private val lifecycleLock = Any()
+    private val frameAssembler = H264AccessUnitAssembler()
     private val remuxExecutor = Executors.newSingleThreadExecutor()
+    @Volatile
+    private var pendingStart = false
 
     @Volatile
     private var recordingFile: File? = null
@@ -71,91 +78,74 @@ class TelloVideoManager(
     fun attachTextureView(view: TextureView) {
         textureView = view
         if (view.isAvailable) {
-            outputSurface = Surface(view.surfaceTexture)
+            prepareSurface(view.surfaceTexture)
         }
         view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, w: Int, h: Int) {
-                outputSurface = Surface(surfaceTexture)
+            override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, w: Int, h: Int) {
+                prepareSurface(surfaceTexture)
                 log("[VIDEO] surface hazir")
+                retryPendingStart()
             }
 
-            override fun onSurfaceTextureSizeChanged(surfaceTexture: android.graphics.SurfaceTexture, w: Int, h: Int) {
+            override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, w: Int, h: Int) {
             }
 
-            override fun onSurfaceTextureDestroyed(surfaceTexture: android.graphics.SurfaceTexture): Boolean {
+            override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
                 outputSurface?.release()
                 outputSurface = null
                 return true
             }
 
-            override fun onSurfaceTextureUpdated(surfaceTexture: android.graphics.SurfaceTexture) {
+            override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
             }
         }
     }
 
     fun start(): Boolean {
-        if (running.get()) return true
+        synchronized(lifecycleLock) {
+            if (running.get()) return true
+            pendingStart = true
 
-        val surface = outputSurface
-        if (surface == null) {
-            log("[VIDEO] surface hazir degil")
-            return false
-        }
-
-        return try {
-            val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 1024)
-            codec.configure(format, surface, null, 0)
-            codec.start()
-            decoder = codec
-
-            val udpSocket = DatagramSocket(listenPort).apply {
-                soTimeout = 1000
-                reuseAddress = true
-                receiveBufferSize = 2 * 1024 * 1024
+            val surface = outputSurface
+            if (surface == null) {
+                log("[VIDEO] surface hazir degil, goruntu beklemeye alindi")
+                return false
             }
-            socket = udpSocket
 
-            running.set(true)
-            startReceiverLoop()
-            log("[VIDEO] stream receiver basladi")
-            true
-        } catch (e: Exception) {
-            log("[VIDEO] baslatma hatasi: ${e.message}")
-            stop()
-            false
+            return try {
+                val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+                format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 1024)
+                codec.configure(format, surface, null, 0)
+                codec.start()
+                decoder = codec
+
+                val udpSocket = DatagramSocket(null).apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(listenPort))
+                    soTimeout = 1000
+                    receiveBufferSize = 2 * 1024 * 1024
+                }
+                socket = udpSocket
+
+                frameAssembler.reset()
+                running.set(true)
+                pendingStart = false
+                startReceiverLoop()
+                log("[VIDEO] stream receiver basladi")
+                true
+            } catch (e: Exception) {
+                log("[VIDEO] baslatma hatasi: ${e.message}")
+                stopInternal()
+                false
+            }
         }
     }
 
     fun stop() {
-        running.set(false)
-
-        try {
-            receiverThread?.interrupt()
-        } catch (_: Exception) {
+        synchronized(lifecycleLock) {
+            stopInternal()
         }
-        receiverThread = null
-
-        try {
-            socket?.close()
-        } catch (_: Exception) {
-        }
-        socket = null
-
-        stopRecording()
-
-        try {
-            decoder?.stop()
-        } catch (_: Exception) {
-        }
-        try {
-            decoder?.release()
-        } catch (_: Exception) {
-        }
-        decoder = null
-
-        log("[VIDEO] stream receiver durdu")
     }
 
     fun isRunning(): Boolean = running.get()
@@ -259,18 +249,22 @@ class TelloVideoManager(
                     val size = packet.length
                     if (size <= 0) continue
 
-                    synchronized(recordLock) {
-                        if (recording.get()) {
-                            try {
-                                recordingStream?.write(packet.data, 0, size)
-                            } catch (_: Exception) {
+                    val accessUnits = frameAssembler.append(packet.data, size)
+                    if (accessUnits.isEmpty()) continue
+
+                    for (accessUnit in accessUnits) {
+                        synchronized(recordLock) {
+                            if (recording.get()) {
+                                try {
+                                    recordingStream?.write(accessUnit)
+                                } catch (_: Exception) {
+                                }
                             }
                         }
-                    }
 
-                    val frameEnd = size != 1460
-                    feedDecoderChunk(codec, packet.data, size, frameEnd)
-                    drainDecoder(codec)
+                        queueDecoderFrame(codec, accessUnit)
+                        drainDecoder(codec)
+                    }
                 } catch (_: SocketException) {
                     break
                 } catch (_: Exception) {
@@ -284,8 +278,8 @@ class TelloVideoManager(
         }
     }
 
-    private fun feedDecoderChunk(codec: MediaCodec, data: ByteArray, size: Int, frameEnd: Boolean) {
-        if (size <= 0) return
+    private fun queueDecoderFrame(codec: MediaCodec, frame: ByteArray) {
+        if (frame.isEmpty()) return
 
         try {
             val inputIndex = codec.dequeueInputBuffer(0)
@@ -293,10 +287,13 @@ class TelloVideoManager(
                 val inputBuffer = codec.getInputBuffer(inputIndex)
                 if (inputBuffer != null) {
                     inputBuffer.clear()
-                    inputBuffer.put(data, 0, size)
+                    if (inputBuffer.capacity() < frame.size) {
+                        codec.queueInputBuffer(inputIndex, 0, 0, 0L, 0)
+                        return
+                    }
+                    inputBuffer.put(frame)
                     val ptsUs = SystemClock.elapsedRealtimeNanos() / 1000L
-                    val flags = if (frameEnd) 0 else MediaCodec.BUFFER_FLAG_PARTIAL_FRAME
-                    codec.queueInputBuffer(inputIndex, 0, size, ptsUs, flags)
+                    codec.queueInputBuffer(inputIndex, 0, frame.size, ptsUs, 0)
                 }
             }
         } catch (_: Exception) {
@@ -307,12 +304,70 @@ class TelloVideoManager(
         try {
             val info = MediaCodec.BufferInfo()
             var outputIndex = codec.dequeueOutputBuffer(info, 0)
-            while (outputIndex >= 0) {
-                codec.releaseOutputBuffer(outputIndex, true)
+            while (outputIndex != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (outputIndex >= 0) {
+                    codec.releaseOutputBuffer(outputIndex, true)
+                }
                 outputIndex = codec.dequeueOutputBuffer(info, 0)
             }
         } catch (_: Exception) {
         }
+    }
+
+    private fun prepareSurface(surfaceTexture: SurfaceTexture?) {
+        if (surfaceTexture == null) return
+        try {
+            surfaceTexture.setDefaultBufferSize(width, height)
+        } catch (_: Exception) {
+        }
+        try {
+            outputSurface?.release()
+        } catch (_: Exception) {
+        }
+        outputSurface = Surface(surfaceTexture)
+    }
+
+    private fun retryPendingStart() {
+        if (!pendingStart || running.get()) return
+        Thread {
+            start()
+        }.apply {
+            isDaemon = true
+            name = "TelloVideoSurfaceRetry"
+            start()
+        }
+    }
+
+    private fun stopInternal() {
+        pendingStart = false
+        running.set(false)
+
+        try {
+            receiverThread?.interrupt()
+        } catch (_: Exception) {
+        }
+        receiverThread = null
+
+        try {
+            socket?.close()
+        } catch (_: Exception) {
+        }
+        socket = null
+
+        frameAssembler.reset()
+        stopRecording()
+
+        try {
+            decoder?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            decoder?.release()
+        } catch (_: Exception) {
+        }
+        decoder = null
+
+        log("[VIDEO] stream receiver durdu")
     }
 
     private fun convertRawRecordingToMp4Async(rawFile: File) {
@@ -383,7 +438,7 @@ class TelloVideoManager(
                     presentationTimeUs = ptsUs
                     flags = if (sampleHasKey) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                 }
-                muxer?.writeSampleData(trackIndex, buffer, info)
+                muxer.writeSampleData(trackIndex, buffer, info)
                 ptsUs += frameIntervalUs
                 sampleNalList.clear()
                 hasVcl = false
@@ -500,5 +555,174 @@ class TelloVideoManager(
 
     private fun log(message: String) {
         listener?.onVideoLog(message)
+    }
+
+    private inner class H264AccessUnitAssembler(
+        private val telloPacketSize: Int = 1460,
+        private val maxFrameBytes: Int = 512 * 1024,
+    ) {
+        private val buffer = ByteArrayOutputStream(maxFrameBytes.coerceAtMost(64 * 1024))
+        private val currentAccessUnit = ArrayList<ByteArray>(8)
+        private var latestSps: ByteArray? = null
+        private var latestPps: ByteArray? = null
+        private var pendingSei: ByteArray? = null
+        private var currentHasVcl = false
+
+        fun append(packet: ByteArray, size: Int): List<ByteArray> {
+            if (size <= 0) return emptyList()
+            if (buffer.size() + size > maxFrameBytes) {
+                reset()
+            }
+            buffer.write(packet, 0, size)
+            return drain(flushTail = size < telloPacketSize)
+        }
+
+        fun reset() {
+            buffer.reset()
+            currentAccessUnit.clear()
+            latestSps = null
+            latestPps = null
+            pendingSei = null
+            currentHasVcl = false
+        }
+
+        private fun drain(flushTail: Boolean): List<ByteArray> {
+            val data = buffer.toByteArray()
+            if (data.isEmpty()) return emptyList()
+
+            val out = ArrayList<ByteArray>(4)
+            var start = findStartCode(data, 0)
+            if (start < 0) {
+                if (data.size > maxFrameBytes / 2) {
+                    buffer.reset()
+                }
+                return emptyList()
+            }
+
+            var carryFrom = start
+            while (start >= 0) {
+                val scLen = startCodeLengthAt(data, start)
+                val nalStart = start + scLen
+                if (nalStart >= data.size) {
+                    carryFrom = start
+                    break
+                }
+
+                val next = findStartCode(data, nalStart)
+                if (next < 0) {
+                    if (flushTail) {
+                        processNal(data.copyOfRange(nalStart, data.size), out)
+                        carryFrom = data.size
+                        flushCurrentAccessUnit(out)
+                    } else {
+                        carryFrom = start
+                    }
+                    break
+                }
+
+                if (next > nalStart) {
+                    processNal(data.copyOfRange(nalStart, next), out)
+                }
+                carryFrom = next
+                start = next
+            }
+
+            if (start < 0) {
+                carryFrom = data.size
+            }
+
+            val remaining = (data.size - carryFrom).coerceAtLeast(0)
+            buffer.reset()
+            if (remaining > 0 && carryFrom < data.size) {
+                buffer.write(data, carryFrom, remaining)
+            }
+
+            return out
+        }
+
+        private fun processNal(nal: ByteArray, out: MutableList<ByteArray>) {
+            if (nal.isEmpty()) return
+            val type = nal[0].toInt() and 0x1F
+
+            when (type) {
+                7 -> {
+                    if (currentHasVcl) {
+                        flushCurrentAccessUnit(out)
+                    }
+                    latestSps = nal.copyOf()
+                }
+
+                8 -> {
+                    if (currentHasVcl) {
+                        flushCurrentAccessUnit(out)
+                    }
+                    latestPps = nal.copyOf()
+                }
+
+                9 -> {
+                    flushCurrentAccessUnit(out)
+                }
+
+                6 -> {
+                    if (currentHasVcl) {
+                        currentAccessUnit.add(withStartCode(nal))
+                    } else {
+                        pendingSei = nal.copyOf()
+                    }
+                }
+
+                1, 5 -> {
+                    val firstSlice = isFirstSliceInPicture(nal)
+                    if (currentHasVcl && firstSlice) {
+                        flushCurrentAccessUnit(out)
+                    }
+                    if (!currentHasVcl) {
+                        beginAccessUnit()
+                    }
+                    currentAccessUnit.add(withStartCode(nal))
+                    currentHasVcl = true
+                }
+
+                else -> {
+                    if (currentHasVcl) {
+                        currentAccessUnit.add(withStartCode(nal))
+                    }
+                }
+            }
+        }
+
+        private fun beginAccessUnit() {
+            currentAccessUnit.clear()
+            latestSps?.let { currentAccessUnit.add(withStartCode(it)) }
+            latestPps?.let { currentAccessUnit.add(withStartCode(it)) }
+            pendingSei?.let {
+                currentAccessUnit.add(withStartCode(it))
+                pendingSei = null
+            }
+        }
+
+        private fun flushCurrentAccessUnit(out: MutableList<ByteArray>) {
+            if (!currentHasVcl || currentAccessUnit.isEmpty()) {
+                currentAccessUnit.clear()
+                currentHasVcl = false
+                return
+            }
+
+            var total = 0
+            for (part in currentAccessUnit) {
+                total += part.size
+            }
+
+            val sample = ByteArray(total)
+            var offset = 0
+            for (part in currentAccessUnit) {
+                System.arraycopy(part, 0, sample, offset, part.size)
+                offset += part.size
+            }
+
+            out.add(sample)
+            currentAccessUnit.clear()
+            currentHasVcl = false
+        }
     }
 }

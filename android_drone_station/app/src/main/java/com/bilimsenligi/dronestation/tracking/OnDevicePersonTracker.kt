@@ -25,6 +25,9 @@ class OnDevicePersonTracker(
     @Volatile
     private var initTried = false
 
+    @Volatile
+    private var lastInitAttemptMs = 0L
+
     fun isReady(): Boolean {
         ensureInit()
         return detector != null
@@ -80,8 +83,11 @@ class OnDevicePersonTracker(
     }
 
     private fun ensureInit() {
-        if (initTried) return
+        if (detector != null) return
+        val now = System.currentTimeMillis()
+        if (initTried && (now - lastInitAttemptMs) < 5_000L) return
         initTried = true
+        lastInitAttemptMs = now
 
         try {
             val base = BaseOptions.builder().setNumThreads(3).build()

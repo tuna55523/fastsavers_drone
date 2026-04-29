@@ -9,30 +9,79 @@
         android:id="@+id/mainScroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true">
+        android:fillViewport="true"
+        android:overScrollMode="never"
+        android:scrollbars="none">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="16dp">
+            android:padding="16dp"
+            android:paddingBottom="28dp">
 
-            <TextView
-                android:id="@+id/titleText"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Drone Station"
-                android:textColor="#EAF2FF"
-                android:textSize="28sp"
-                android:textStyle="bold" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="Tello + PS4 Hybrid Control Console"
-                android:textColor="#B6C5E2"
-                android:textSize="13sp" />
+                <com.google.android.material.card.MaterialCardView
+                    android:layout_width="58dp"
+                    android:layout_height="58dp"
+                    app:cardBackgroundColor="#16243B"
+                    app:cardCornerRadius="18dp"
+                    app:cardElevation="0dp"
+                    app:strokeColor="#314568"
+                    app:strokeWidth="1dp">
+
+                    <ImageView
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:padding="12dp"
+                        android:scaleType="centerInside"
+                        android:src="@drawable/droneicon" />
+                </com.google.android.material.card.MaterialCardView>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="14dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/titleText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Drone Station"
+                        android:textColor="#F8FBFF"
+                        android:textSize="28sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Tello ucus, canli video ve PS4 kontrolu tek panelde."
+                        android:textColor="#AFC3E3"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_status_chip"
+                        android:paddingStart="10dp"
+                        android:paddingTop="6dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="6dp"
+                        android:text="Hazir panel: Kamera + Ucus + Takip"
+                        android:textColor="#DDEAFE"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -69,11 +118,71 @@
 
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                app:cardBackgroundColor="#13233A"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="0dp"
+                app:strokeColor="#2A4163"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Hizli Baslangic"
+                        android:textColor="#F8FAFC"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="Yeni kullanicilar icin tek bakista ucus akisi."
+                        android:textColor="#A8BDD9"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="1. Telefonu drone Wi-Fi agina bagla."
+                        android:textColor="#E5EEF9"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="2. Drone'a Baglan ile komut ve video akisini ac."
+                        android:textColor="#E5EEF9"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="3. Kamera geldikten sonra kalkis ve takip kontrollerini kullan."
+                        android:textColor="#E5EEF9"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
                 android:layout_height="230dp"
                 android:layout_marginTop="12dp"
                 app:cardBackgroundColor="#0B1220"
                 app:cardCornerRadius="20dp"
-                app:cardElevation="2dp">
+                app:cardElevation="0dp"
+                app:strokeColor="#2A4163"
+                app:strokeWidth="1dp">
 
                 <FrameLayout
                     android:layout_width="match_parent"
@@ -93,6 +202,21 @@
                         android:textColor="#E2E8F0"
                         android:textSize="14sp" />
 
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="top|start"
+                        android:layout_margin="10dp"
+                        android:background="@drawable/bg_status_chip"
+                        android:paddingStart="10dp"
+                        android:paddingTop="6dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="6dp"
+                        android:text="Canli Kamera"
+                        android:textColor="#E2EDFF"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/openVideoPanelButton"
                         style="@style/Widget.Material3.Button"
@@ -100,7 +224,7 @@
                         android:layout_height="wrap_content"
                         android:layout_gravity="top|end"
                         android:layout_margin="8dp"
-                        android:text="Tam Ekran"
+                        android:text="Kontrol Modu"
                         android:textAllCaps="false"
                         app:cornerRadius="16dp" />
                 </FrameLayout>
@@ -112,7 +236,9 @@
                 android:layout_marginTop="12dp"
                 app:cardBackgroundColor="#F8FAFF"
                 app:cardCornerRadius="18dp"
-                app:cardElevation="1dp">
+                app:cardElevation="0dp"
+                app:strokeColor="#D6E3F4"
+                app:strokeWidth="1dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -121,110 +247,416 @@
                     android:padding="14dp">
 
                     <TextView
-                        android:id="@+id/statusText"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Baglanti: Bekleniyor"
+                        android:text="Ucus Durumu"
                         android:textColor="#111827"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
                     <TextView
-                        android:id="@+id/batteryText"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="Batarya: -"
-                        android:textColor="#0F172A"
-                        android:textSize="15sp" />
+                        android:layout_marginTop="4dp"
+                        android:text="Baglanti, batarya ve takip bilgisini buradan hizli gor."
+                        android:textColor="#475569"
+                        android:textSize="12sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.card.MaterialCardView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            app:cardBackgroundColor="#EEF4FF"
+                            app:cardCornerRadius="16dp"
+                            app:cardElevation="0dp"
+                            app:strokeColor="#D6E3F4"
+                            app:strokeWidth="1dp">
+
+                            <TextView
+                                android:id="@+id/statusText"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:padding="12dp"
+                                android:text="Baglanti: Bekleniyor"
+                                android:textColor="#0F172A"
+                                android:textSize="14sp"
+                                android:textStyle="bold" />
+                        </com.google.android.material.card.MaterialCardView>
+
+                        <com.google.android.material.card.MaterialCardView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            app:cardBackgroundColor="#EEF4FF"
+                            app:cardCornerRadius="16dp"
+                            app:cardElevation="0dp"
+                            app:strokeColor="#D6E3F4"
+                            app:strokeWidth="1dp">
+
+                            <TextView
+                                android:id="@+id/batteryText"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:padding="12dp"
+                                android:text="Batarya: -"
+                                android:textColor="#0F172A"
+                                android:textSize="14sp" />
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.card.MaterialCardView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            app:cardBackgroundColor="#EEF4FF"
+                            app:cardCornerRadius="16dp"
+                            app:cardElevation="0dp"
+                            app:strokeColor="#D6E3F4"
+                            app:strokeWidth="1dp">
+
+                            <TextView
+                                android:id="@+id/trackingText"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:padding="12dp"
+                                android:text="Takip: Kapali"
+                                android:textColor="#0F172A"
+                                android:textSize="14sp" />
+                        </com.google.android.material.card.MaterialCardView>
+
+                        <com.google.android.material.card.MaterialCardView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            app:cardBackgroundColor="#EEF4FF"
+                            app:cardCornerRadius="16dp"
+                            app:cardElevation="0dp"
+                            app:strokeColor="#D6E3F4"
+                            app:strokeWidth="1dp">
+
+                            <TextView
+                                android:id="@+id/recordText"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:padding="12dp"
+                                android:text="Kayit: Kapali"
+                                android:textColor="#0F172A"
+                                android:textSize="14sp" />
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
 
                     <TextView
-                        android:id="@+id/trackingText"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="Takip: Kapali"
-                        android:textColor="#0F172A"
-                        android:textSize="15sp" />
-
-                    <TextView
-                        android:id="@+id/recordText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="Kayit: Kapali"
-                        android:textColor="#0F172A"
-                        android:textSize="15sp" />
-
-                    <TextView
-                        android:id="@+id/commandText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="Son komut: -"
+                        android:layout_marginTop="14dp"
+                        android:text="Son Sistem Mesaji"
                         android:textColor="#334155"
-                        android:textSize="14sp" />
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        app:cardBackgroundColor="#F1F5F9"
+                        app:cardCornerRadius="14dp"
+                        app:cardElevation="0dp"
+                        app:strokeColor="#D6E3F4"
+                        app:strokeWidth="1dp">
+
+                        <TextView
+                            android:id="@+id/commandText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:padding="12dp"
+                            android:text="Son komut: -"
+                            android:textColor="#334155"
+                            android:textSize="13sp" />
+                    </com.google.android.material.card.MaterialCardView>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <LinearLayout
+            <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
-                android:orientation="horizontal">
+                app:cardBackgroundColor="#F8FAFF"
+                app:cardCornerRadius="18dp"
+                app:cardElevation="0dp"
+                app:strokeColor="#D6E3F4"
+                app:strokeWidth="1dp">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/connectButton"
-                    style="@style/Widget.Material3.Button"
-                    android:layout_width="0dp"
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginEnd="6dp"
-                    android:layout_weight="1"
-                    android:text="Tello Baglan"
-                    android:textAllCaps="false"
-                    app:cornerRadius="16dp" />
+                    android:orientation="vertical"
+                    android:padding="14dp">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/chargeButton"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="0dp"
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Hizli Islemler"
+                        android:textColor="#111827"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="Ucus oncesi temel komutlara buradan hizli ulas."
+                        android:textColor="#475569"
+                        android:textSize="12sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/connectButton"
+                            style="@style/Widget.Material3.Button"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            android:text="Drone'a Baglan"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/chargeButton"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            android:text="Bataryayi Guncelle"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+                    </LinearLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/takeoffLandButton"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="Kalkis Yap (X)"
+                        android:textAllCaps="false"
+                        app:cornerRadius="16dp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/trackingToggleButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            android:text="Takibi Baslat"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/nextTargetButton"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            android:text="Hedefi Degistir"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                app:cardBackgroundColor="#F8FAFF"
+                app:cardCornerRadius="18dp"
+                app:cardElevation="0dp"
+                app:strokeColor="#D6E3F4"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="6dp"
-                    android:layout_weight="1"
-                    android:text="Sarj Al"
-                    android:textAllCaps="false"
-                    app:cornerRadius="16dp" />
-            </LinearLayout>
+                    android:orientation="vertical"
+                    android:padding="14dp">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/takeoffLandButton"
-                style="@style/Widget.Material3.Button"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Kalkis / Inis (X)"
-                android:textAllCaps="false"
-                app:cornerRadius="16dp" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Telefon Kontrolleri"
+                        android:textColor="#111827"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/trackingToggleButton"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Takip Baslat / Durdur (O/Kare)"
-                android:textAllCaps="false"
-                app:cornerRadius="16dp" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="Joystick ileri-geri ve saga-sola kaydirir. Yan butonlar sadece donus yapar."
+                        android:textColor="#475569"
+                        android:textSize="13sp" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/nextTargetButton"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Hedef Degistir (Ucgen)"
-                android:textAllCaps="false"
-                app:cornerRadius="16dp" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <com.bilimsenligi.dronestation.ui.VirtualJoystickView
+                            android:id="@+id/mainLeftVirtualJoystick"
+                            android:layout_width="150dp"
+                            android:layout_height="150dp" />
+
+                        <FrameLayout
+                            android:layout_width="0dp"
+                            android:layout_height="180dp"
+                            android:layout_marginStart="16dp"
+                            android:layout_weight="1">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/mainTouchUpButton"
+                                style="@style/Widget.Material3.Button"
+                                android:layout_width="64dp"
+                                android:layout_height="64dp"
+                                android:layout_gravity="top|center_horizontal"
+                                android:text="Yuksel"
+                                android:textAllCaps="false"
+                                app:backgroundTint="#FF0F172A"
+                                app:cornerRadius="32dp" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/mainTouchDownButton"
+                                style="@style/Widget.Material3.Button"
+                                android:layout_width="64dp"
+                                android:layout_height="64dp"
+                                android:layout_gravity="bottom|center_horizontal"
+                                android:text="Alcal"
+                                android:textAllCaps="false"
+                                app:backgroundTint="#FF0F172A"
+                                app:cornerRadius="32dp" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/mainTouchYawLeftButton"
+                                style="@style/Widget.Material3.Button"
+                                android:layout_width="64dp"
+                                android:layout_height="64dp"
+                                android:layout_gravity="center_vertical|start"
+                                android:text="D.Sol"
+                                android:textAllCaps="false"
+                                app:backgroundTint="#FF0F172A"
+                                app:cornerRadius="32dp" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/mainTouchYawRightButton"
+                                style="@style/Widget.Material3.Button"
+                                android:layout_width="64dp"
+                                android:layout_height="64dp"
+                                android:layout_gravity="center_vertical|end"
+                                android:text="D.Sag"
+                                android:textAllCaps="false"
+                                app:backgroundTint="#FF0F172A"
+                                app:cornerRadius="32dp" />
+                        </FrameLayout>
+                    </LinearLayout>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="Takla icin drone havada olmali ve batarya en az %25 olmali."
+                        android:textColor="#475569"
+                        android:textSize="13sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/flipForwardButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            android:text="On"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/flipBackButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            android:text="Arka"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/flipLeftButton"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="6dp"
+                            android:layout_weight="1"
+                            android:text="Sol"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/flipRightButton"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            android:text="Sag"
+                            android:textAllCaps="false"
+                            app:cornerRadius="16dp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
 
             <TextView
                 android:id="@+id/guideText"
@@ -232,8 +664,8 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
                 android:layout_marginBottom="20dp"
-                android:text="PS4: R2 ileri, L2 geri, R1/L1 donus, D-pad takla, L3 foto, R3 video, Options tam ekrandan cikis."
-                android:textColor="#CBD5E1"
+                android:text="PS4: R2/L2 hiz, L1/R1 donus, D-pad takla, L3 foto, R3 kayit. Telefonla da pad ve akrobatik butonlari kullanilabilir."
+                android:textColor="#D8E4F5"
                 android:textSize="13sp" />
         </LinearLayout>
     </ScrollView>
@@ -243,6 +675,8 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="#000000"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         android:visibility="gone">
 
         <TextureView
@@ -251,20 +685,172 @@
             android:layout_height="match_parent" />
 
         <View
+            android:id="@+id/fullScreenDimOverlay"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:background="#22000000" />
+            android:background="#26061118"
+            android:clickable="false"
+            android:focusable="false" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="12dp"
+            android:elevation="12dp"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_overlay_panel"
+                android:orientation="vertical"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="10dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Canli Ucus Konsolu"
+                    android:textColor="#F8FBFF"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp"
+                    android:maxWidth="240dp"
+                    android:text="Kamera, kol ve drone durumu tam ekranda tek bakista."
+                    android:textColor="#C6D7EE"
+                    android:textSize="11sp" />
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/fullScreenConnectionChip"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_overlay_chip"
+                        android:paddingStart="10dp"
+                        android:paddingTop="6dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="6dp"
+                        android:text="Drone Kapali"
+                        android:textColor="#EAF3FF"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/fullScreenControllerChip"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_overlay_chip"
+                        android:paddingStart="10dp"
+                        android:paddingTop="6dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="6dp"
+                        android:text="Kol Yok"
+                        android:textColor="#EAF3FF"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/fullScreenBatteryChip"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_overlay_chip"
+                        android:paddingStart="10dp"
+                        android:paddingTop="6dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="6dp"
+                        android:text="Batarya -"
+                        android:textColor="#EAF3FF"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/fullScreenTrackingChip"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_overlay_chip"
+                        android:paddingStart="10dp"
+                        android:paddingTop="6dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="6dp"
+                        android:text="Takip Kapali"
+                        android:textColor="#EAF3FF"
+                        android:textSize="10.5sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/fullScreenGamepadHelpPanel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                app:cardBackgroundColor="#00000000"
+                app:cardCornerRadius="16dp"
+                app:cardElevation="0dp"
+                app:strokeWidth="0dp">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_overlay_panel"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Kol Kisayollari"
+                        android:textColor="#F8FAFC"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:maxWidth="220dp"
+                        android:text="R2/L2 hizli ileri-geri&#10;L1/R1 yumusak donus&#10;Sol cubuk yon&#10;Sag cubuk yuksel/alcal&#10;X kalkis-inis, O takip, Kare durdur, Ucgen hedef"
+                        android:textColor="#D6E2F5"
+                        android:textSize="10.5sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+        </LinearLayout>
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/closeVideoPanelButton"
-            style="@style/Widget.Material3.Button"
+            style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|end"
             android:layout_margin="12dp"
-            android:text="Kapat (Options)"
+            android:elevation="12dp"
+            android:text="Panele Don"
             android:textAllCaps="false"
-            app:cornerRadius="16dp" />
+            app:backgroundTint="#1F3652"
+            app:cornerRadius="16dp"
+            app:strokeColor="#6B88AD"
+            app:strokeWidth="1dp" />
 
         <com.bilimsenligi.dronestation.ui.VirtualJoystickView
             android:id="@+id/leftVirtualJoystick"
@@ -272,14 +858,17 @@
             android:layout_height="170dp"
             android:layout_gravity="bottom|start"
             android:layout_marginStart="20dp"
-            android:layout_marginBottom="24dp" />
+            android:layout_marginBottom="24dp"
+            android:elevation="12dp" />
 
         <FrameLayout
+            android:id="@+id/fullScreenAxisPad"
             android:layout_width="210dp"
             android:layout_height="210dp"
             android:layout_gravity="bottom|end"
             android:layout_marginEnd="20dp"
-            android:layout_marginBottom="20dp">
+            android:layout_marginBottom="20dp"
+            android:elevation="12dp">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/touchUpButton"
@@ -309,7 +898,7 @@
                 android:layout_width="64dp"
                 android:layout_height="64dp"
                 android:layout_gravity="center_vertical|start"
-                android:text="Z-"
+                android:text="D.Sol"
                 android:textAllCaps="false"
                 app:backgroundTint="#AA0F172A"
                 app:cornerRadius="32dp" />
@@ -320,7 +909,7 @@
                 android:layout_width="64dp"
                 android:layout_height="64dp"
                 android:layout_gravity="center_vertical|end"
-                android:text="Z+"
+                android:text="D.Sag"
                 android:textAllCaps="false"
                 app:backgroundTint="#AA0F172A"
                 app:cornerRadius="32dp" />

@@ -4,6 +4,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 class GamepadMapper {
@@ -38,44 +39,61 @@ class GamepadMapper {
     private var r1Pressed: Boolean = false
     private var l2Pressed: Boolean = false
     private var r2Pressed: Boolean = false
+    private var activeControllerDeviceId: Int? = null
+    private var lastMotionEventMs: Long = 0L
+    private var lastKeyEventMs: Long = 0L
 
     private val axisDeadzone = 0.12f
-    private val maxForwardBack = 55
-    private val maxLeftRight = 35
-    private val maxUpDown = 50
-    private val yawByBumper = 45
+    private val triggerDeadzone = 0.05f
+    private val analogInputTimeoutMs = 450L
+    private val buttonInputTimeoutMs = 2500L
+    private val maxForwardBack = 65
+    private val maxLeftRight = 40
+    private val maxUpDown = 45
+    private val yawByBumper = 42
 
     fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (event.action != MotionEvent.ACTION_MOVE) return false
-        if ((event.source and InputDevice.SOURCE_JOYSTICK) != InputDevice.SOURCE_JOYSTICK) return false
+        if (!isGamepadInputDevice(event.device, event.source)) return false
+        if (!acceptDevice(event.deviceId)) return false
+        lastMotionEventMs = System.currentTimeMillis()
 
-        leftStickX = centeredAxis(event, MotionEvent.AXIS_X)
+        leftStickX = readCenteredAxis(
+            event,
+            MotionEvent.AXIS_X,
+            MotionEvent.AXIS_HAT_X,
+        )
 
         // Different gamepads expose right stick vertical on different axes.
-        val ry = centeredAxis(event, MotionEvent.AXIS_RY)
-        rightStickY = if (ry != 0f) ry else centeredAxis(event, MotionEvent.AXIS_Z)
+        rightStickY = readCenteredAxis(
+            event,
+            MotionEvent.AXIS_RY,
+            MotionEvent.AXIS_RZ,
+            MotionEvent.AXIS_Z,
+        )
 
-        val rTrigger = axisWithFallback(
+        rightTriggerAxis = readTriggerAxis(
             event,
             MotionEvent.AXIS_RTRIGGER,
             MotionEvent.AXIS_GAS,
         )
-        val lTrigger = axisWithFallback(
+        leftTriggerAxis = readTriggerAxis(
             event,
             MotionEvent.AXIS_LTRIGGER,
             MotionEvent.AXIS_BRAKE,
         )
-
-        rightTriggerAxis = normalizeTrigger(rTrigger)
-        leftTriggerAxis = normalizeTrigger(lTrigger)
         return true
     }
 
-    fun onKeyDown(keyCode: Int, repeatCount: Int): List<Action> {
-        val actions = mutableListOf<Action>()
-        val firstPress = repeatCount == 0
+    fun onKeyDown(event: KeyEvent): List<Action> {
+        if (!isGamepadInputDevice(event.device, event.source)) return emptyList()
+        if (!acceptDevice(event.deviceId)) return emptyList()
+        lastKeyEventMs = System.currentTimeMillis()
 
-        when (keyCode) {
+        val actions = mutableListOf<Action>()
+        val firstPress = event.repeatCount == 0
+
+        when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L1 -> l1Pressed = true
             KeyEvent.KEYCODE_BUTTON_R1 -> r1Pressed = true
             KeyEvent.KEYCODE_BUTTON_L2 -> l2Pressed = true
@@ -109,8 +127,12 @@ class GamepadMapper {
         return actions
     }
 
-    fun onKeyUp(keyCode: Int): Boolean {
-        when (keyCode) {
+    fun onKeyUp(event: KeyEvent): Boolean {
+        if (!isGamepadInputDevice(event.device, event.source)) return false
+        if (!acceptDevice(event.deviceId)) return false
+        lastKeyEventMs = System.currentTimeMillis()
+
+        when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L1 -> l1Pressed = false
             KeyEvent.KEYCODE_BUTTON_R1 -> r1Pressed = false
             KeyEvent.KEYCODE_BUTTON_L2 -> l2Pressed = false
@@ -121,21 +143,23 @@ class GamepadMapper {
     }
 
     fun currentRcCommand(): RcCommand {
-        val forward = maxOf(rightTriggerAxis, if (r2Pressed) 1f else 0f)
-        val backward = maxOf(leftTriggerAxis, if (l2Pressed) 1f else 0f)
+        expireStaleInputs()
+
+        val forward = maxOf(shapeTrigger(rightTriggerAxis), if (r2Pressed) 1f else 0f)
+        val backward = maxOf(shapeTrigger(leftTriggerAxis), if (l2Pressed) 1f else 0f)
 
         val fbRaw = forward - backward
         val fb = scaleSigned(fbRaw, maxForwardBack)
 
         // Requirement: left analog helps steering while moving forward/back.
-        val lr = if (abs(fb) >= 5) {
-            scaleSigned(applyDeadzone(leftStickX), maxLeftRight)
+        val lr = if (abs(fb) >= 4) {
+            scaleSigned(shapeSigned(applyDeadzone(leftStickX), exponent = 0.88f), maxLeftRight)
         } else {
             0
         }
 
         // Requirement: right analog controls up/down.
-        val ud = scaleSigned(-applyDeadzone(rightStickY), maxUpDown)
+        val ud = scaleSigned(shapeSigned(-applyDeadzone(rightStickY), exponent = 0.88f), maxUpDown)
 
         val yaw = when {
             r1Pressed && !l1Pressed -> yawByBumper
@@ -151,9 +175,35 @@ class GamepadMapper {
         )
     }
 
-    private fun normalizeTrigger(value: Float): Float {
-        val v = value.coerceIn(0f, 1f)
-        return if (v < 0.02f) 0f else v
+    fun hasManualInput(): Boolean {
+        return kotlin.math.abs(leftStickX) >= axisDeadzone ||
+            kotlin.math.abs(rightStickY) >= axisDeadzone ||
+            leftTriggerAxis >= 0.05f ||
+            rightTriggerAxis >= 0.05f ||
+            l1Pressed ||
+            r1Pressed ||
+            l2Pressed ||
+            r2Pressed
+    }
+
+    fun reset() {
+        leftStickX = 0f
+        rightStickY = 0f
+        leftTriggerAxis = 0f
+        rightTriggerAxis = 0f
+        l1Pressed = false
+        r1Pressed = false
+        l2Pressed = false
+        r2Pressed = false
+        lastMotionEventMs = 0L
+        lastKeyEventMs = 0L
+        activeControllerDeviceId = null
+    }
+
+    fun onInputDeviceRemoved(deviceId: Int) {
+        if (activeControllerDeviceId == deviceId) {
+            reset()
+        }
     }
 
     private fun scaleSigned(value: Float, maxAbs: Int): Int {
@@ -169,13 +219,80 @@ class GamepadMapper {
         return if (abs(value) > flat) value else 0f
     }
 
-    private fun axisWithFallback(event: MotionEvent, primary: Int, secondary: Int): Float {
-        val a = event.getAxisValue(primary)
-        if (abs(a) > 1e-4f) return a
-        return event.getAxisValue(secondary)
+    private fun readCenteredAxis(event: MotionEvent, vararg axes: Int): Float {
+        for (axis in axes) {
+            val value = centeredAxis(event, axis)
+            if (abs(value) > 1e-4f) return value
+        }
+        return 0f
+    }
+
+    private fun readTriggerAxis(event: MotionEvent, vararg axes: Int): Float {
+        val device = event.device ?: return 0f
+        for (axis in axes) {
+            val range = device.getMotionRange(axis, event.source) ?: continue
+            val value = event.getAxisValue(axis)
+            val normalized = if (range.min < 0f && range.max > 0f) {
+                if (abs(value) <= maxOf(range.flat, triggerDeadzone)) continue
+                ((value - range.min) / (range.max - range.min)).coerceIn(0f, 1f)
+            } else {
+                value.coerceIn(0f, 1f)
+            }
+            if (normalized > 0.02f) return normalized
+        }
+        return 0f
     }
 
     private fun applyDeadzone(value: Float): Float {
         return if (abs(value) < axisDeadzone) 0f else value
+    }
+
+    private fun shapeTrigger(value: Float): Float {
+        val clamped = value.coerceIn(0f, 1f)
+        if (clamped <= triggerDeadzone) return 0f
+
+        val normalized = ((clamped - triggerDeadzone) / (1f - triggerDeadzone)).coerceIn(0f, 1f)
+        val curved = normalized.pow(0.66f)
+        return (0.08f + (curved * 0.92f)).coerceIn(0f, 1f)
+    }
+
+    private fun shapeSigned(value: Float, exponent: Float): Float {
+        val clamped = value.coerceIn(-1f, 1f)
+        val sign = if (clamped >= 0f) 1f else -1f
+        return sign * abs(clamped).pow(exponent)
+    }
+
+    private fun acceptDevice(deviceId: Int): Boolean {
+        val active = activeControllerDeviceId
+        return if (active == null || active == deviceId) {
+            activeControllerDeviceId = deviceId
+            true
+        } else {
+            false
+        }
+    }
+
+    private fun expireStaleInputs() {
+        val now = System.currentTimeMillis()
+        if (lastMotionEventMs > 0L && now - lastMotionEventMs > analogInputTimeoutMs) {
+            leftStickX = 0f
+            rightStickY = 0f
+            leftTriggerAxis = 0f
+            rightTriggerAxis = 0f
+            lastMotionEventMs = 0L
+        }
+        if (lastKeyEventMs > 0L && now - lastKeyEventMs > buttonInputTimeoutMs) {
+            l1Pressed = false
+            r1Pressed = false
+            l2Pressed = false
+            r2Pressed = false
+            lastKeyEventMs = 0L
+        }
+    }
+
+    private fun isGamepadInputDevice(device: InputDevice?, source: Int): Boolean {
+        val effectiveSource = if (source != 0) source else (device?.sources ?: 0)
+        return (effectiveSource and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            (effectiveSource and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
     }
 }

@@ -2,6 +2,7 @@
 
 import com.bilimsenligi.dronestation.control.GamepadMapper
 import kotlin.math.abs
+import kotlin.math.sign
 
 class TrackingAssistMixer {
 
@@ -10,9 +11,16 @@ class TrackingAssistMixer {
         val udKp: Float = 28f,
         val fbKp: Float = 26f,
         val desiredSize: Float = 0.22f,
+        val sizeDeadzone: Float = 0.03f,
+        val maxFbAssistAbs: Int = 42,
         val minConfidence: Float = 0.30f,
         val deadzoneX: Float = 0.04f,
         val deadzoneY: Float = 0.05f,
+        /**
+         * Tracking sample akisi kesildiginde komutlarin ne kadar hizli sifira sonecegini belirler.
+         * Ornek: staleTimeoutMs=900 ise, 300ms'de yaklasik sifira iner.
+         */
+        val fadeOutMs: Long = 300L,
     )
 
     private var gains = Gains()
@@ -23,18 +31,45 @@ class TrackingAssistMixer {
 
     fun mix(
         manual: GamepadMapper.RcCommand,
-        trackingEnabled: Boolean,
+        trackingStatus: TrackingManager.TrackingStatus,
         sample: TrackingTelemetryReceiver.TrackingSample?,
+        nowMs: Long,
+        staleTimeoutMs: Long,
     ): GamepadMapper.RcCommand {
-        if (!trackingEnabled || sample == null || sample.confidence < gains.minConfidence) {
+        if (!trackingStatus.enabled || sample == null || sample.confidence < gains.minConfidence) {
             return manual
         }
 
-        val yawAssist = if (abs(sample.tx) < gains.deadzoneX) 0 else (sample.tx * gains.yawKp).toInt()
-        val udAssist = if (abs(sample.ty) < gains.deadzoneY) 0 else (-sample.ty * gains.udKp).toInt()
+        val ageMs = nowMs - sample.timestampMs
+        if (ageMs > staleTimeoutMs) {
+            return manual
+        }
+
+        if (sample.targetId >= 0 && sample.targetId != trackingStatus.targetIndex) {
+            return manual
+        }
+
+        val fadeMs = gains.fadeOutMs.coerceIn(0L, staleTimeoutMs)
+        val alpha = when {
+            fadeMs <= 0L -> 1f
+            ageMs <= fadeMs -> 1f
+            else -> {
+                val denom = (staleTimeoutMs - fadeMs).coerceAtLeast(1L).toFloat()
+                (1f - ((ageMs - fadeMs).toFloat() / denom)).coerceIn(0f, 1f)
+            }
+        }
+
+        val yawAssist = if (abs(sample.tx) < gains.deadzoneX) 0 else (sample.tx * gains.yawKp * alpha).toInt()
+        val udAssist = if (abs(sample.ty) < gains.deadzoneY) 0 else (-sample.ty * gains.udKp * alpha).toInt()
 
         val sizeError = gains.desiredSize - sample.size
-        val fbAssist = (sizeError * gains.fbKp).toInt()
+        val sizeErrorDz = if (abs(sizeError) < gains.sizeDeadzone) 0f else {
+            val trimmed = abs(sizeError) - gains.sizeDeadzone
+            sign(sizeError) * trimmed
+        }
+        val fbAssist = (sizeErrorDz * gains.fbKp * alpha)
+            .toInt()
+            .coerceIn(-gains.maxFbAssistAbs, gains.maxFbAssistAbs)
 
         // Manual forward/back control remains primary; tracking only assists.
         val mixedFb = (manual.forwardBack + fbAssist).coerceIn(-100, 100)

@@ -3,6 +3,7 @@
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetSocketAddress
 import java.net.SocketException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
@@ -44,9 +45,10 @@ class TrackingTelemetryReceiver(
         if (running.get()) return
 
         try {
-            val s = DatagramSocket(listenPort).apply {
-                soTimeout = 1000
+            val s = DatagramSocket(null).apply {
                 reuseAddress = true
+                bind(InetSocketAddress(listenPort))
+                soTimeout = 1000
             }
             socket = s
             running.set(true)

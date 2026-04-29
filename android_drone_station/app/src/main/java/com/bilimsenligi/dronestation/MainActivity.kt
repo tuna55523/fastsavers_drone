@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.graphics.Rect
+import android.hardware.input.InputManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -12,6 +14,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Looper
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -44,7 +47,8 @@ import java.util.concurrent.TimeUnit
 class MainActivity : AppCompatActivity(),
     TelloClient.Listener,
     TelloVideoManager.Listener,
-    TrackingTelemetryReceiver.Listener {
+    TrackingTelemetryReceiver.Listener,
+    InputManager.InputDeviceListener {
 
     private lateinit var statusText: TextView
     private lateinit var batteryText: TextView
@@ -54,6 +58,10 @@ class MainActivity : AppCompatActivity(),
     private lateinit var videoHintText: TextView
     private lateinit var droneWifiText: TextView
     private lateinit var controllerBtText: TextView
+    private lateinit var fullScreenConnectionChip: TextView
+    private lateinit var fullScreenBatteryChip: TextView
+    private lateinit var fullScreenTrackingChip: TextView
+    private lateinit var fullScreenControllerChip: TextView
 
     private lateinit var connectButton: Button
     private lateinit var chargeButton: Button
@@ -63,16 +71,26 @@ class MainActivity : AppCompatActivity(),
     private lateinit var openVideoPanelButton: Button
     private lateinit var closeVideoPanelButton: Button
 
+    private lateinit var mainLeftVirtualJoystick: VirtualJoystickView
     private lateinit var videoTexture: TextureView
     private lateinit var fullScreenTexture: TextureView
     private lateinit var mainScroll: ScrollView
     private lateinit var fullScreenPanel: FrameLayout
+    private lateinit var fullScreenAxisPad: FrameLayout
     private lateinit var activeVideoTexture: TextureView
     private lateinit var leftVirtualJoystick: VirtualJoystickView
+    private lateinit var mainTouchUpButton: Button
+    private lateinit var mainTouchDownButton: Button
+    private lateinit var mainTouchYawLeftButton: Button
+    private lateinit var mainTouchYawRightButton: Button
     private lateinit var touchUpButton: Button
     private lateinit var touchDownButton: Button
     private lateinit var touchYawLeftButton: Button
     private lateinit var touchYawRightButton: Button
+    private lateinit var flipForwardButton: Button
+    private lateinit var flipBackButton: Button
+    private lateinit var flipLeftButton: Button
+    private lateinit var flipRightButton: Button
 
     private val telloClient = TelloClient()
     private val telloVideo = TelloVideoManager()
@@ -93,6 +111,11 @@ class MainActivity : AppCompatActivity(),
     private val batteryFlipMin = 25
     private val reconnectStateTimeoutMs = 8500L
     private val maxReconnectAttempts = 6
+    private val trackingSampleStaleMs = 900L
+    private val touchStrafeMax = 42
+    private val touchForwardBackMax = 62
+    private val touchUpDownRate = 42
+    private val touchYawRate = 28
 
     @Volatile
     private var isAirborne = false
@@ -142,8 +165,25 @@ class MainActivity : AppCompatActivity(),
     @Volatile
     private var connectedAtMs = 0L
 
+    @Volatile
+    private var activeTouchJoystickId: Int? = null
+
+    @Volatile
+    private var controllerRecoveryPending = false
+
     private var wifiLock: WifiManager.WifiLock? = null
     private var wifiBindCallback: ConnectivityManager.NetworkCallback? = null
+    private lateinit var inputManager: InputManager
+    private var inputListenerRegistered = false
+    private val touchUpSources = mutableSetOf<Int>()
+    private val touchDownSources = mutableSetOf<Int>()
+    private val touchYawLeftSources = mutableSetOf<Int>()
+    private val touchYawRightSources = mutableSetOf<Int>()
+    private var touchJoysticks: List<VirtualJoystickView> = emptyList()
+    private var touchUpButtons: List<Button> = emptyList()
+    private var touchDownButtons: List<Button> = emptyList()
+    private var touchYawLeftButtons: List<Button> = emptyList()
+    private var touchYawRightButtons: List<Button> = emptyList()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -168,6 +208,10 @@ class MainActivity : AppCompatActivity(),
         videoHintText = findViewById(R.id.videoHintText)
         droneWifiText = findViewById(R.id.droneWifiText)
         controllerBtText = findViewById(R.id.controllerBtText)
+        fullScreenConnectionChip = findViewById(R.id.fullScreenConnectionChip)
+        fullScreenBatteryChip = findViewById(R.id.fullScreenBatteryChip)
+        fullScreenTrackingChip = findViewById(R.id.fullScreenTrackingChip)
+        fullScreenControllerChip = findViewById(R.id.fullScreenControllerChip)
 
         connectButton = findViewById(R.id.connectButton)
         chargeButton = findViewById(R.id.chargeButton)
@@ -177,16 +221,27 @@ class MainActivity : AppCompatActivity(),
         openVideoPanelButton = findViewById(R.id.openVideoPanelButton)
         closeVideoPanelButton = findViewById(R.id.closeVideoPanelButton)
 
+        mainLeftVirtualJoystick = findViewById(R.id.mainLeftVirtualJoystick)
         videoTexture = findViewById(R.id.videoTexture)
         fullScreenTexture = findViewById(R.id.fullScreenTexture)
         mainScroll = findViewById(R.id.mainScroll)
         fullScreenPanel = findViewById(R.id.fullScreenPanel)
+        fullScreenAxisPad = findViewById(R.id.fullScreenAxisPad)
         leftVirtualJoystick = findViewById(R.id.leftVirtualJoystick)
+        mainTouchUpButton = findViewById(R.id.mainTouchUpButton)
+        mainTouchDownButton = findViewById(R.id.mainTouchDownButton)
+        mainTouchYawLeftButton = findViewById(R.id.mainTouchYawLeftButton)
+        mainTouchYawRightButton = findViewById(R.id.mainTouchYawRightButton)
         touchUpButton = findViewById(R.id.touchUpButton)
         touchDownButton = findViewById(R.id.touchDownButton)
         touchYawLeftButton = findViewById(R.id.touchYawLeftButton)
         touchYawRightButton = findViewById(R.id.touchYawRightButton)
+        flipForwardButton = findViewById(R.id.flipForwardButton)
+        flipBackButton = findViewById(R.id.flipBackButton)
+        flipLeftButton = findViewById(R.id.flipLeftButton)
+        flipRightButton = findViewById(R.id.flipRightButton)
         activeVideoTexture = videoTexture
+        inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
 
         telloClient.setListener(this)
         telloVideo.setListener(this)
@@ -221,24 +276,45 @@ class MainActivity : AppCompatActivity(),
 
         trackingToggleButton.setOnClickListener {
             val enabled = trackingManager.toggle()
+            latestTrackingSample = null
             postCommandText(if (enabled) "Takip baslatildi" else "Takip durduruldu")
             updateTrackingUi()
         }
 
         nextTargetButton.setOnClickListener {
             val idx = trackingManager.nextTarget()
+            latestTrackingSample = null
             postCommandText("Takip hedefi degisti -> #$idx")
             updateTrackingUi()
         }
 
+        flipForwardButton.setOnClickListener {
+            handleAction(GamepadMapper.Action.FLIP_FORWARD)
+        }
+
+        flipBackButton.setOnClickListener {
+            handleAction(GamepadMapper.Action.FLIP_BACK)
+        }
+
+        flipLeftButton.setOnClickListener {
+            handleAction(GamepadMapper.Action.FLIP_LEFT)
+        }
+
+        flipRightButton.setOnClickListener {
+            handleAction(GamepadMapper.Action.FLIP_RIGHT)
+        }
+
         ensureRuntimePermissions()
         bindTouchFlightControls()
+        configureFullscreenTouchTargets()
+        registerInputDeviceListenerIfNeeded()
 
         updateConnectionUi(false)
         updateTrackingUi()
         updateRecordUi(false)
         updateLinkStatusUi()
-        takeoffLandButton.text = "Kalkis (X)"
+        updateFullscreenHud()
+        takeoffLandButton.text = "Kalkis Yap (X)"
         startSchedulers()
     }
 
@@ -246,6 +322,7 @@ class MainActivity : AppCompatActivity(),
         super.onDestroy()
         autoReconnectEnabled = false
         reconnectInProgress = false
+        unregisterInputDeviceListener()
         trackingRx.stop()
         telloVideo.stop()
         telloClient.disconnect()
@@ -263,8 +340,15 @@ class MainActivity : AppCompatActivity(),
 
     override fun onResume() {
         super.onResume()
+        registerInputDeviceListenerIfNeeded()
         ensureRuntimePermissions()
         updateLinkStatusUi()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        gamepadMapper.reset()
+        resetTouchManual()
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
@@ -278,8 +362,8 @@ class MainActivity : AppCompatActivity(),
             return true
         }
 
-        val actions = gamepadMapper.onKeyDown(keyCode, event.repeatCount)
-        val handledByMapper = actions.isNotEmpty() || isContinuousGamepadKey(keyCode)
+        val actions = gamepadMapper.onKeyDown(event)
+        val handledByMapper = actions.isNotEmpty() || (isContinuousGamepadKey(keyCode) && isGamepadKeyEvent(event))
         if (actions.isNotEmpty()) {
             for (action in actions) {
                 handleAction(action)
@@ -289,8 +373,26 @@ class MainActivity : AppCompatActivity(),
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        val handled = gamepadMapper.onKeyUp(keyCode)
+        val handled = gamepadMapper.onKeyUp(event)
         return handled || super.onKeyUp(keyCode, event)
+    }
+
+    override fun onInputDeviceAdded(deviceId: Int) {
+        if (!isPhysicalGamepad(deviceId)) return
+        runOnUiThread { updateLinkStatusUi() }
+        scheduleControllerLinkRefresh("kol baglandi", resetMapper = true)
+    }
+
+    override fun onInputDeviceRemoved(deviceId: Int) {
+        gamepadMapper.onInputDeviceRemoved(deviceId)
+        runOnUiThread { updateLinkStatusUi() }
+        scheduleControllerLinkRefresh("kol ayrildi", resetMapper = false)
+    }
+
+    override fun onInputDeviceChanged(deviceId: Int) {
+        if (!isPhysicalGamepad(deviceId)) return
+        runOnUiThread { updateLinkStatusUi() }
+        scheduleControllerLinkRefresh("kol guncellendi", resetMapper = false)
     }
 
     override fun onLog(message: String) {
@@ -302,6 +404,7 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             val batText = state.batteryPercent?.let { "$it%" } ?: "-"
             batteryText.text = "Batarya: $batText"
+            updateFullscreenHud()
         }
     }
 
@@ -338,13 +441,14 @@ class MainActivity : AppCompatActivity(),
     private fun connectDrone() {
         connectButton.isEnabled = false
         statusText.text = "Baglanti: baglaniyor..."
+        updateFullscreenHud()
         autoReconnectEnabled = false
         reconnectInProgress = false
         reconnectAttempts = 0
         nextReconnectAtMs = 0L
 
         commandExecutor.execute {
-            bindToWifiNetwork()
+            bindToWifiNetwork(forceRebind = true)
             acquireWifiLock()
 
             val ok = telloClient.connect()
@@ -391,11 +495,13 @@ class MainActivity : AppCompatActivity(),
             }
             telloVideo.stop()
             telloClient.disconnect()
+            gamepadMapper.reset()
             isAirborne = false
             isVideoRecording = false
             staleStrikeCount = 0
             connectedAtMs = 0L
             latestBatteryPercent = null
+            latestTrackingSample = null
             resetTouchManual()
             releaseWifiLock()
             unbindNetwork()
@@ -403,7 +509,7 @@ class MainActivity : AppCompatActivity(),
             runOnUiThread {
                 updateConnectionUi(false)
                 batteryText.text = "Batarya: -"
-                takeoffLandButton.text = "Kalkis (X)"
+                takeoffLandButton.text = "Kalkis Yap (X)"
                 updateRecordUi(false)
                 updateLinkStatusUi()
                 videoHintText.text = "Video bekleniyor..."
@@ -425,6 +531,7 @@ class MainActivity : AppCompatActivity(),
                     latestBatteryPercent = battery
                     batteryText.text = "Batarya: $battery%"
                     postCommandText("Sarj guncellendi: $battery%")
+                    updateFullscreenHud()
                 }
             }
         }
@@ -436,8 +543,9 @@ class MainActivity : AppCompatActivity(),
             connectButton.text = "Baglantiyi Kes"
         } else {
             statusText.text = "Baglanti: Kapali"
-            connectButton.text = "Tello Baglan"
+            connectButton.text = "Drone'a Baglan"
         }
+        updateFullscreenHud()
     }
 
     private fun updateTrackingUi() {
@@ -445,6 +553,7 @@ class MainActivity : AppCompatActivity(),
         val mode = if (st.enabled) "Acik" else "Kapali"
         trackingText.text = "Takip: $mode | Hedef #${st.targetIndex}"
         trackingToggleButton.text = if (st.enabled) "Takibi Durdur (Kare)" else "Takibi Baslat (Yuvarlak)"
+        updateFullscreenHud()
     }
 
     private fun updateRecordUi(recording: Boolean) {
@@ -459,8 +568,14 @@ class MainActivity : AppCompatActivity(),
                     val gamepadManual = gamepadMapper.currentRcCommand()
                     val touchManual = currentTouchRcCommand()
                     val manual = mergeManualInput(gamepadManual, touchManual)
-                    val trackingEnabled = trackingManager.status().enabled
-                    val mixed = trackingMixer.mix(manual, trackingEnabled, latestTrackingSample)
+                    val trackingStatus = trackingManager.status()
+                    val mixed = trackingMixer.mix(
+                        manual = manual,
+                        trackingStatus = trackingStatus,
+                        sample = latestTrackingSample,
+                        nowMs = System.currentTimeMillis(),
+                        staleTimeoutMs = trackingSampleStaleMs,
+                    )
                     if (!isAirborne &&
                         mixed.leftRight == 0 &&
                         mixed.forwardBack == 0 &&
@@ -530,14 +645,17 @@ class MainActivity : AppCompatActivity(),
                             return@scheduleAtFixedRate
                         }
                         staleStrikeCount += 1
-                        runOnUiThread { statusText.text = "Baglanti: Zayif" }
+                        runOnUiThread {
+                            statusText.text = "Baglanti: Zayif"
+                            updateFullscreenHud()
+                        }
 
                         if (staleStrikeCount >= 2 && !recoveryBusy && !reconnectInProgress) {
                             recoveryBusy = true
                             commandExecutor.execute {
                                 try {
-                                    bindToWifiNetwork()
-                                    telloClient.sendCommand("keepalive", timeoutMs = 700)
+                                    bindToWifiNetwork(forceRebind = true)
+                                    telloClient.sendCommandNoWait("command")
                                     telloClient.restartStateListener()
                                     if (!telloVideo.isRunning()) {
                                         telloClient.streamOn()
@@ -559,6 +677,7 @@ class MainActivity : AppCompatActivity(),
                         runOnUiThread {
                             if (statusText.text.toString() != "Baglanti: Aktif") {
                                 statusText.text = "Baglanti: Aktif"
+                                updateFullscreenHud()
                             }
                         }
                     }
@@ -574,7 +693,9 @@ class MainActivity : AppCompatActivity(),
             {
                 try {
                     if (!telloClient.isConnected()) return@scheduleAtFixedRate
-                    telloClient.sendCommand("keepalive", timeoutMs = 700)
+                    if (!gamepadMapper.hasManualInput() && !hasTouchManualInput()) {
+                        telloClient.sendCommandNoWait("command")
+                    }
                 } catch (_: Exception) {
                 }
             },
@@ -597,7 +718,7 @@ class MainActivity : AppCompatActivity(),
         gamepadUiScheduler.scheduleAtFixedRate(
             {
                 runOnUiThread {
-                    updateFullscreenControlVisuals()
+                    updateTouchControlVisuals()
                 }
             },
             0,
@@ -629,7 +750,7 @@ class MainActivity : AppCompatActivity(),
                         if (ok) isAirborne = false
                         postCommandText(if (ok) "Inis OK" else "Inis basarisiz")
                     }
-                    runOnUiThread { takeoffLandButton.text = if (isAirborne) "Inis (X)" else "Kalkis (X)" }
+                    runOnUiThread { takeoffLandButton.text = if (isAirborne) "Inis Yap (X)" else "Kalkis Yap (X)" }
                 }
 
                 GamepadMapper.Action.FLIP_FORWARD -> {
@@ -687,18 +808,21 @@ class MainActivity : AppCompatActivity(),
 
                 GamepadMapper.Action.TRACKING_START -> {
                     trackingManager.start()
+                    latestTrackingSample = null
                     runOnUiThread { updateTrackingUi() }
                     postCommandText("Insan takibi baslatildi")
                 }
 
                 GamepadMapper.Action.TRACKING_STOP -> {
                     trackingManager.stop()
+                    latestTrackingSample = null
                     runOnUiThread { updateTrackingUi() }
                     postCommandText("Insan takibi durduruldu")
                 }
 
                 GamepadMapper.Action.TRACKING_TARGET_NEXT -> {
                     val idx = trackingManager.nextTarget()
+                    latestTrackingSample = null
                     runOnUiThread { updateTrackingUi() }
                     postCommandText("Takip hedefi degisti -> #$idx")
                 }
@@ -743,6 +867,7 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             statusText.text = "Baglanti: Yeniden baglaniyor ($attempt/$maxReconnectAttempts)"
             connectButton.isEnabled = false
+            updateFullscreenHud()
         }
 
         commandExecutor.execute {
@@ -769,6 +894,7 @@ class MainActivity : AppCompatActivity(),
                 updateConnectionUi(false)
                 statusText.text = "Baglanti: Yeniden denenecek"
                 connectButton.isEnabled = true
+                updateFullscreenHud()
             }
             postCommandText("Reconnect basarisiz ($reason), ${backoffMs / 1000}s sonra tekrar denenecek")
         }
@@ -780,7 +906,7 @@ class MainActivity : AppCompatActivity(),
             telloClient.disconnect()
             Thread.sleep(200)
 
-            bindToWifiNetwork()
+            bindToWifiNetwork(forceRebind = true)
             acquireWifiLock()
 
             val ok = telloClient.connect()
@@ -816,53 +942,89 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun bindTouchFlightControls() {
-        leftVirtualJoystick.setOnMoveListener(object : VirtualJoystickView.OnMoveListener {
+        touchJoysticks = listOf(mainLeftVirtualJoystick, leftVirtualJoystick)
+        touchUpButtons = listOf(mainTouchUpButton, touchUpButton)
+        touchDownButtons = listOf(mainTouchDownButton, touchDownButton)
+        touchYawLeftButtons = listOf(mainTouchYawLeftButton, touchYawLeftButton)
+        touchYawRightButtons = listOf(mainTouchYawRightButton, touchYawRightButton)
+
+        touchJoysticks.forEach { joystick ->
+            bindTouchJoystick(joystick)
+        }
+        touchUpButtons.forEach { button -> bindHoldButton(button, touchUpSources) }
+        touchDownButtons.forEach { button -> bindHoldButton(button, touchDownSources) }
+        touchYawLeftButtons.forEach { button -> bindHoldButton(button, touchYawLeftSources) }
+        touchYawRightButtons.forEach { button -> bindHoldButton(button, touchYawRightSources) }
+
+        updateTouchControlVisuals()
+    }
+
+    private fun bindTouchJoystick(joystick: VirtualJoystickView) {
+        joystick.setOnMoveListener(object : VirtualJoystickView.OnMoveListener {
             override fun onMove(nx: Float, ny: Float, active: Boolean) {
+                val sourceId = joystick.id
                 if (!active) {
-                    touchLr = 0
-                    touchFb = 0
+                    if (activeTouchJoystickId == sourceId) {
+                        activeTouchJoystickId = null
+                        touchLr = 0
+                        touchFb = 0
+                        mirrorTouchJoystick(sourceId, 0f, 0f)
+                    }
                     return
                 }
+
+                activeTouchJoystickId = sourceId
                 val deadzone = 0.08f
                 val x = if (kotlin.math.abs(nx) < deadzone) 0f else nx
                 val y = if (kotlin.math.abs(ny) < deadzone) 0f else ny
 
-                // Left stick: horizontal strafe + forward/back. Diagonal naturally works.
-                touchLr = (x * 55f).toInt().coerceIn(-100, 100)
-                touchFb = (-y * 70f).toInt().coerceIn(-100, 100)
+                touchLr = (x * touchStrafeMax).toInt().coerceIn(-100, 100)
+                touchFb = (-y * touchForwardBackMax).toInt().coerceIn(-100, 100)
+                mirrorTouchJoystick(sourceId, x, y)
             }
         })
-
-        bindHoldButton(touchUpButton) { pressed ->
-            touchUd = if (pressed) 60 else 0
-        }
-        bindHoldButton(touchDownButton) { pressed ->
-            touchUd = if (pressed) -60 else 0
-        }
-        bindHoldButton(touchYawLeftButton) { pressed ->
-            touchYaw = if (pressed) -55 else 0
-        }
-        bindHoldButton(touchYawRightButton) { pressed ->
-            touchYaw = if (pressed) 55 else 0
-        }
     }
 
-    private fun bindHoldButton(button: View, setter: (Boolean) -> Unit) {
+    private fun bindHoldButton(button: Button, holdSources: MutableSet<Int>) {
         button.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                    setter(true)
+                    holdSources.add(button.id)
+                    updateTouchAxisState()
                     true
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
-                    setter(false)
+                    holdSources.remove(button.id)
+                    updateTouchAxisState()
                     true
                 }
 
                 else -> true
             }
         }
+    }
+
+    private fun mirrorTouchJoystick(sourceId: Int, nx: Float, ny: Float) {
+        touchJoysticks.forEach { joystick ->
+            if (joystick.id != sourceId && !joystick.isUserActive()) {
+                joystick.setVisualNormalized(nx, ny)
+            }
+        }
+    }
+
+    private fun updateTouchAxisState() {
+        touchUd = when {
+            touchUpSources.isNotEmpty() && touchDownSources.isEmpty() -> touchUpDownRate
+            touchDownSources.isNotEmpty() && touchUpSources.isEmpty() -> -touchUpDownRate
+            else -> 0
+        }
+        touchYaw = when {
+            touchYawRightSources.isNotEmpty() && touchYawLeftSources.isEmpty() -> touchYawRate
+            touchYawLeftSources.isNotEmpty() && touchYawRightSources.isEmpty() -> -touchYawRate
+            else -> 0
+        }
+        updateTouchControlVisuals()
     }
 
     private fun currentTouchRcCommand(): GamepadMapper.RcCommand {
@@ -892,13 +1054,25 @@ class MainActivity : AppCompatActivity(),
         touchFb = 0
         touchUd = 0
         touchYaw = 0
-        if (!leftVirtualJoystick.isUserActive()) {
-            leftVirtualJoystick.setVisualNormalized(0f, 0f)
+        activeTouchJoystickId = null
+        touchUpSources.clear()
+        touchDownSources.clear()
+        touchYawLeftSources.clear()
+        touchYawRightSources.clear()
+
+        val applyUiReset = {
+            touchJoysticks.forEach { joystick ->
+                if (!joystick.isUserActive()) {
+                    joystick.setVisualNormalized(0f, 0f)
+                }
+            }
+            updateTouchControlVisuals()
         }
-        setControlButtonActive(touchUpButton, false)
-        setControlButtonActive(touchDownButton, false)
-        setControlButtonActive(touchYawLeftButton, false)
-        setControlButtonActive(touchYawRightButton, false)
+        if (Thread.currentThread() == Looper.getMainLooper().thread) {
+            applyUiReset()
+        } else {
+            runOnUiThread { applyUiReset() }
+        }
     }
 
     private fun enterVideoPanel() {
@@ -906,8 +1080,10 @@ class MainActivity : AppCompatActivity(),
         isVideoPanelOpen = true
         mainScroll.visibility = View.GONE
         fullScreenPanel.visibility = View.VISIBLE
+        updateFullscreenHud()
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         setImmersiveMode(true)
+        configureFullscreenTouchTargets()
         switchVideoSurface(fullScreenTexture)
     }
 
@@ -945,6 +1121,10 @@ class MainActivity : AppCompatActivity(),
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && isVideoPanelOpen) {
             setImmersiveMode(true)
+            configureFullscreenTouchTargets()
+        } else if (!hasFocus) {
+            gamepadMapper.reset()
+            resetTouchManual()
         }
     }
 
@@ -960,14 +1140,14 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    private fun updateFullscreenControlVisuals() {
-        if (!isVideoPanelOpen) return
-
+    private fun updateTouchControlVisuals() {
         val gamepad = gamepadMapper.currentRcCommand()
-        if (!leftVirtualJoystick.isUserActive()) {
-            val nx = (gamepad.leftRight / 55f).coerceIn(-1f, 1f)
-            val ny = (-gamepad.forwardBack / 70f).coerceIn(-1f, 1f)
-            leftVirtualJoystick.setVisualNormalized(nx, ny)
+        val nx = (gamepad.leftRight / 40f).coerceIn(-1f, 1f)
+        val ny = (-gamepad.forwardBack / 65f).coerceIn(-1f, 1f)
+        touchJoysticks.forEach { joystick ->
+            if (!joystick.isUserActive()) {
+                joystick.setVisualNormalized(nx, ny)
+            }
         }
 
         val upActive = touchUd > 0 || gamepad.upDown > 10
@@ -975,16 +1155,125 @@ class MainActivity : AppCompatActivity(),
         val yawLeftActive = touchYaw < 0 || gamepad.yaw < -10
         val yawRightActive = touchYaw > 0 || gamepad.yaw > 10
 
-        setControlButtonActive(touchUpButton, upActive)
-        setControlButtonActive(touchDownButton, downActive)
-        setControlButtonActive(touchYawLeftButton, yawLeftActive)
-        setControlButtonActive(touchYawRightButton, yawRightActive)
+        touchUpButtons.forEach { button -> setControlButtonActive(button, upActive) }
+        touchDownButtons.forEach { button -> setControlButtonActive(button, downActive) }
+        touchYawLeftButtons.forEach { button -> setControlButtonActive(button, yawLeftActive) }
+        touchYawRightButtons.forEach { button -> setControlButtonActive(button, yawRightActive) }
     }
 
     private fun setControlButtonActive(button: Button, active: Boolean) {
         button.alpha = if (active) 1.0f else 0.72f
         button.scaleX = if (active) 1.04f else 1.0f
         button.scaleY = if (active) 1.04f else 1.0f
+    }
+
+    private fun configureFullscreenTouchTargets() {
+        fullScreenTexture.isClickable = false
+        fullScreenTexture.isFocusable = false
+        fullScreenTexture.isFocusableInTouchMode = false
+        fullScreenPanel.isClickable = false
+        fullScreenPanel.isFocusable = false
+
+        fullScreenPanel.post {
+            closeVideoPanelButton.bringToFront()
+            leftVirtualJoystick.bringToFront()
+            fullScreenAxisPad.bringToFront()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                fullScreenPanel.systemGestureExclusionRects = listOf(
+                    expandedRectInParent(leftVirtualJoystick, fullScreenPanel, 24),
+                    expandedRectInParent(fullScreenAxisPad, fullScreenPanel, 24),
+                    expandedRectInParent(closeVideoPanelButton, fullScreenPanel, 12),
+                )
+            }
+        }
+    }
+
+    private fun expandedRectInParent(view: View, parent: View, extraDp: Int): Rect {
+        val location = IntArray(2)
+        val parentLocation = IntArray(2)
+        view.getLocationOnScreen(location)
+        parent.getLocationOnScreen(parentLocation)
+        val extraPx = (extraDp * resources.displayMetrics.density).toInt()
+        return Rect(
+            location[0] - parentLocation[0] - extraPx,
+            location[1] - parentLocation[1] - extraPx,
+            location[0] - parentLocation[0] + view.width + extraPx,
+            location[1] - parentLocation[1] + view.height + extraPx,
+        )
+    }
+
+    private fun registerInputDeviceListenerIfNeeded() {
+        if (inputListenerRegistered) return
+        inputManager.registerInputDeviceListener(this, null)
+        inputListenerRegistered = true
+    }
+
+    private fun unregisterInputDeviceListener() {
+        if (!inputListenerRegistered) return
+        try {
+            inputManager.unregisterInputDeviceListener(this)
+        } catch (_: Exception) {
+        }
+        inputListenerRegistered = false
+    }
+
+    private fun scheduleControllerLinkRefresh(reason: String, resetMapper: Boolean) {
+        if (resetMapper) {
+            gamepadMapper.reset()
+        }
+        runOnUiThread { updateTouchControlVisuals() }
+        if (!telloClient.isConnected() || reconnectInProgress) return
+        if (controllerRecoveryPending) return
+
+        controllerRecoveryPending = true
+        fullScreenPanel.postDelayed(
+            {
+                commandExecutor.execute {
+                    try {
+                        performControllerLinkRefresh(reason)
+                    } finally {
+                        controllerRecoveryPending = false
+                    }
+                }
+            },
+            450L,
+        )
+    }
+
+    private fun performControllerLinkRefresh(reason: String) {
+        try {
+            bindToWifiNetwork(forceRebind = true)
+            acquireWifiLock()
+            telloVideo.stop()
+            telloClient.sendCommandNoWait("command")
+            telloClient.restartStateListener()
+            telloClient.streamOn()
+            val videoOk = telloVideo.start()
+            val battery = telloClient.queryBattery()
+            staleStrikeCount = 0
+            connectedAtMs = System.currentTimeMillis()
+            if (battery != null) {
+                latestBatteryPercent = battery
+            }
+
+            runOnUiThread {
+                if (battery != null) {
+                    batteryText.text = "Batarya: $battery%"
+                }
+                videoHintText.text = if (videoOk) "Video akis aktif" else "Video baslatilamadi"
+                updateLinkStatusUi()
+            }
+            postCommandText(
+                if (videoOk) {
+                    "Kol degisikligi toparlandi: $reason"
+                } else {
+                    "Kol degisti, video yeniden deneniyor"
+                },
+            )
+        } catch (_: Exception) {
+            postCommandText("Kol degisti, baglanti yenileme denemesi yapildi")
+        }
     }
 
     private fun updateLinkStatusUi() {
@@ -997,6 +1286,30 @@ class MainActivity : AppCompatActivity(),
             !bluetoothAllowed -> "Kol BT: Izin Gerekli"
             controllerConnected -> "Kol BT: Bagli"
             else -> "Kol BT: Bagli degil"
+        }
+        updateFullscreenHud()
+    }
+
+    private fun updateFullscreenHud() {
+        val trackingStatus = trackingManager.status()
+        val bluetoothAllowed = hasBluetoothConnectPermission()
+        val controllerConnected = if (bluetoothAllowed) isGamepadConnected() else false
+        val connectionLabel = statusText.text.toString()
+            .removePrefix("Baglanti:")
+            .trim()
+            .ifBlank { if (telloClient.isConnected()) "Aktif" else "Kapali" }
+
+        fullScreenConnectionChip.text = "Drone $connectionLabel"
+        fullScreenBatteryChip.text = latestBatteryPercent?.let { "Batarya $it%" } ?: "Batarya -"
+        fullScreenTrackingChip.text = if (trackingStatus.enabled) {
+            "Takip #${trackingStatus.targetIndex}"
+        } else {
+            "Takip Kapali"
+        }
+        fullScreenControllerChip.text = when {
+            !bluetoothAllowed -> "Kol Izin"
+            controllerConnected -> "Kol Bagli"
+            else -> "Kol Yok"
         }
     }
 
@@ -1048,14 +1361,29 @@ class MainActivity : AppCompatActivity(),
     private fun isGamepadConnected(): Boolean {
         val ids = InputDevice.getDeviceIds()
         for (id in ids) {
-            val dev = InputDevice.getDevice(id) ?: continue
-            if (dev.isVirtual) continue
-            val src = dev.sources
-            val isPad = (src and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-                (src and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-            if (isPad) return true
+            if (isPhysicalGamepad(id)) return true
         }
         return false
+    }
+
+    private fun isPhysicalGamepad(deviceId: Int): Boolean {
+        val dev = InputDevice.getDevice(deviceId) ?: return false
+        if (dev.isVirtual) return false
+        val src = dev.sources
+        return (src and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            (src and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+    }
+
+    private fun isGamepadKeyEvent(event: KeyEvent): Boolean {
+        val device = event.device ?: return false
+        if (device.isVirtual) return false
+        val src = if (event.source != 0) event.source else device.sources
+        return (src and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            (src and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+    }
+
+    private fun hasTouchManualInput(): Boolean {
+        return touchLr != 0 || touchFb != 0 || touchUd != 0 || touchYaw != 0
     }
 
     private fun postCommandText(message: String) {
@@ -1096,17 +1424,30 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    private fun bindToWifiNetwork() {
+    private fun bindToWifiNetwork(forceRebind: Boolean = false) {
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            if (forceRebind) {
+                cm.bindProcessToNetwork(null)
+                val existing = wifiBindCallback
+                if (existing != null) {
+                    try {
+                        cm.unregisterNetworkCallback(existing)
+                    } catch (_: Exception) {
+                    }
+                }
+                wifiBindCallback = null
+            }
+
             val active = cm.activeNetwork
             if (active != null) {
                 val caps = cm.getNetworkCapabilities(active)
                 if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
                     cm.bindProcessToNetwork(active)
-                    return
                 }
             }
+
+            if (wifiBindCallback != null) return
 
             val req = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -1114,6 +1455,14 @@ class MainActivity : AppCompatActivity(),
 
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    try {
+                        cm.bindProcessToNetwork(network)
+                    } catch (_: Exception) {
+                    }
+                }
+
+                override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                    if (!networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
                     try {
                         cm.bindProcessToNetwork(network)
                     } catch (_: Exception) {

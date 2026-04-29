@@ -44,6 +44,7 @@ class VirtualJoystickView @JvmOverloads constructor(
     private var knobY = 0f
     @Volatile
     private var userActive = false
+    private var activePointerId = MotionEvent.INVALID_POINTER_ID
 
     fun setOnMoveListener(listener: OnMoveListener?) {
         this.listener = listener
@@ -67,17 +68,43 @@ class VirtualJoystickView @JvmOverloads constructor(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_POINTER_DOWN -> {
+            MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                activePointerId = event.getPointerId(0)
                 userActive = true
-                moveKnob(event.x, event.y, true)
+                moveKnob(event.getX(0), event.getY(0), true)
                 return true
             }
 
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_UP -> {
-                userActive = false
-                resetKnob()
-                listener?.onMove(0f, 0f, false)
-                invalidate()
+            MotionEvent.ACTION_MOVE -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                val pointerIndex = event.findPointerIndex(activePointerId)
+                if (pointerIndex >= 0) {
+                    moveKnob(event.getX(pointerIndex), event.getY(pointerIndex), true)
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (!userActive) {
+                    val pointerIndex = event.actionIndex
+                    activePointerId = event.getPointerId(pointerIndex)
+                    userActive = true
+                    moveKnob(event.getX(pointerIndex), event.getY(pointerIndex), true)
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_POINTER_UP -> {
+                val pointerIndex = event.actionIndex
+                if (event.getPointerId(pointerIndex) == activePointerId) {
+                    releaseControl()
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                releaseControl()
                 return true
             }
         }
@@ -110,6 +137,14 @@ class VirtualJoystickView @JvmOverloads constructor(
         knobX = cx
         knobY = cy
         invalidate()
+    }
+
+    private fun releaseControl() {
+        parent?.requestDisallowInterceptTouchEvent(false)
+        activePointerId = MotionEvent.INVALID_POINTER_ID
+        userActive = false
+        resetKnob()
+        listener?.onMove(0f, 0f, false)
     }
 
     fun isUserActive(): Boolean = userActive
