@@ -1,7 +1,14 @@
 import cv2
+import os
+import sys
 import time
 import threading
 from pynput import keyboard
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = CURRENT_DIR
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from system.drone.drone_controller import DroneController
 from system.drone.sim_drone_controller import SimDroneController
@@ -254,7 +261,11 @@ while True:
     frame_ts = time.time()
     if RUN_MODE.lower() == "sim" and hasattr(drone, "get_frame_timestamp"):
         frame_ts = drone.get_frame_timestamp()
-    frame, target, persons = vision.run(frame, frame_ts=frame_ts)
+    vision_result = vision.run(frame, frame_ts=frame_ts)
+    if isinstance(vision_result, (tuple, list)) and len(vision_result) >= 4:
+        frame, target, persons, _ = vision_result[:4]
+    else:
+        frame, target, persons = vision_result
 
     TARGET_COUNT = len(persons)
 

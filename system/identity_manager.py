@@ -952,6 +952,7 @@ class IdentityManager:
                 "bbox": det["bbox"],
                 "center": center,
                 "area": area,
+                "source": det.get("det_source", "person"),
                 "risk": person["risk"],
                 "raw_risk": person["raw_risk"],
                 "risk_rise_rate": person.get("risk_rise_rate", 0.0),
