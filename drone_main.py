@@ -2,6 +2,7 @@ import cv2
 import os
 import sys
 import time
+import threading
 from pynput import keyboard
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +23,7 @@ from config import (
     SIM_COMMAND_LOG_PATH,
     FRAME_WIDTH,
     FRAME_HEIGHT,
+    MANUAL_SPEED,
     ACTION_SAFE,
     ACTION_WATCH,
     ACTION_ALERT,
@@ -62,10 +64,8 @@ keys = set()
 
 AUTO_MODE = False
 TARGET_COUNT = 0
-
-# FAST SPEED
-MANUAL_SPEED = 75
-AUTO_SPEED_BOOST = True
+TAKEOFF_BUSY = False
+LAND_BUSY = False
 
 
 # ======================================================
@@ -104,75 +104,140 @@ last_battery_poll = 0.0
 # HUD
 # ======================================================
 
-def draw_hud(frame, battery, auto_mode, op_state, target, fps):
+def _blend_rect(img, x1, y1, x2, y2, color=(18, 22, 28), alpha=0.35, border=(80, 100, 115)):
+    x1 = max(0, int(x1))
+    y1 = max(0, int(y1))
+    x2 = min(img.shape[1] - 1, int(x2))
+    y2 = min(img.shape[0] - 1, int(y2))
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+    cv2.addWeighted(overlay, alpha, img, 1.0 - alpha, 0, img)
+    if border is not None:
+        cv2.rectangle(img, (x1, y1), (x2, y2), border, 1)
+
+
+def _draw_text_lines(frame, x, y, lines, title_color=(0, 214, 255)):
+    line_h = 19
+    for idx, line in enumerate(lines):
+        if not line:
+            y += 8
+            continue
+        if idx == 0:
+            color = title_color
+            scale = 0.57
+            thick = 2
+        else:
+            color = (235, 240, 245)
+            scale = 0.46
+            thick = 1
+        cv2.putText(frame, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+        y += line_h
+
+
+def draw_hud(frame, battery, auto_mode, op_state, target, fps, takeoff_busy, land_busy):
 
     h, w = frame.shape[:2]
+    left_w = min(320, max(240, int(w * 0.28)))
+    right_w = min(360, max(250, int(w * 0.31)))
+    panel_h = min(245, max(185, int(h * 0.36)))
 
-    cv2.rectangle(frame, (0, 0), (560, 245), (20, 20, 20), -1)
+    _blend_rect(frame, 10, 10, 10 + left_w, 10 + panel_h, alpha=0.33)
+    _blend_rect(frame, w - right_w - 10, 10, w - 10, 10 + panel_h, alpha=0.33)
 
     mode_text = "AUTO" if auto_mode else "MANUAL"
-
-    cv2.putText(frame, f"MODE: {mode_text}", (15, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
-
-    cv2.putText(frame, f"OP STATE: {op_state}", (180, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0,255,255), 2)
-
-    cv2.putText(frame, f"BATTERY: {battery}%", (15, 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-
-    cv2.putText(frame, f"FPS: {fps:.1f}", (15, 90),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-
-    cv2.putText(frame, f"PEOPLE: {TARGET_COUNT}", (15, 120),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+    flight_text = "TAKEOFF" if takeoff_busy else ("LANDING" if land_busy else "READY")
+    people_text = f"PEOPLE: {TARGET_COUNT}"
 
     if target:
         alert_state = target.get("alert_state", "SAFE")
         raw_risk = target.get("raw_risk", target.get("risk", 0.0))
-
+        risk_rise = target.get("risk_rise_rate", 0.0)
+        action = ACTION_SAFE
         if alert_state == "ALERT":
             action = ACTION_ALERT
-            action_color = (0, 0, 255)
         elif alert_state == "WATCH":
             action = ACTION_WATCH
-            action_color = (0, 165, 255)
-        else:
-            action = ACTION_SAFE
-            action_color = (0, 255, 0)
-
-        cv2.putText(frame,
-                    f"TARGET ID:{target['id']} RISK:{target['risk']:.2f} RAW:{raw_risk:.2f}",
-                    (15, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.58, action_color, 2)
-        cv2.putText(frame,
-                    f"ALERT:{alert_state}  ACTION:{action}",
-                    (15, 180),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.58, action_color, 2)
+        target_line_1 = f"TARGET ID:{target['id']} R:{target['risk']:.2f} RAW:{raw_risk:.2f} RR:{risk_rise:.2f}/s"
+        target_line_2 = f"ALERT:{alert_state} ACTION:{action}"
     else:
-        cv2.putText(frame, "TARGET: NONE  ACTION: SCAN AREA", (15, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255,255,255), 2)
+        target_line_1 = "TARGET: NONE"
+        target_line_2 = "ACTION: SCAN AREA"
 
-    cv2.putText(
-        frame,
-        f"POLICY W>={RISK_WATCH_ENTER:.2f}/{RISK_WATCH_ENTER_SECONDS:.1f}s  A>={RISK_ALERT_ENTER:.2f}/{RISK_ALERT_ENTER_SECONDS:.1f}s",
-        (15, 205),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (180, 180, 180),
-        1,
-    )
-    cv2.putText(
-        frame,
+    left_lines = [
+        "VISION / MISSION",
+        f"MODE: {mode_text}",
+        f"OP: {op_state}",
+        f"FLIGHT: {flight_text}",
+        f"BATTERY: {battery}%",
+        f"FPS: {fps:.1f}",
+        people_text,
+        "",
+        target_line_1,
+        target_line_2,
+        "",
+        f"W>={RISK_WATCH_ENTER:.2f}/{RISK_WATCH_ENTER_SECONDS:.1f}s  A>={RISK_ALERT_ENTER:.2f}/{RISK_ALERT_ENTER_SECONDS:.1f}s",
         f"FAST W>={RISK_FAST_WATCH:.2f}/{RISK_FAST_WATCH_SECONDS:.2f}s  A>={RISK_FAST_ALERT:.2f}/{RISK_FAST_ALERT_SECONDS:.2f}s",
-        (15, 225),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (180, 180, 180),
-        1,
-    )
+    ]
+    _draw_text_lines(frame, 22, 34, left_lines)
+
+    right_lines = [
+        "MOTION / CONTROLS",
+        "U: AUTO / MANUAL",
+        "T: TAKEOFF",
+        "L: LAND",
+        "",
+        "W/S: FORWARD/BACK",
+        "A/D: LEFT/RIGHT",
+        "Q/E: YAW LEFT/RIGHT",
+        "C: UP",
+        "Z or X: DOWN",
+        "",
+        "AUTO SEARCH: smooth yaw sweep",
+        "AUTO TRACK: smoothed follow",
+        "ESC: EXIT",
+    ]
+    _draw_text_lines(frame, w - right_w + 6, 34, right_lines)
+
+
+def _start_takeoff_async(drone):
+    global TAKEOFF_BUSY, LAND_BUSY
+    if TAKEOFF_BUSY or LAND_BUSY:
+        return
+
+    def _worker():
+        global TAKEOFF_BUSY
+        TAKEOFF_BUSY = True
+        try:
+            drone.takeoff()
+            print("[FLIGHT] TAKEOFF OK")
+        except Exception as e:
+            print(f"[FLIGHT] TAKEOFF ERROR: {e}")
+        finally:
+            TAKEOFF_BUSY = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _start_land_async(drone):
+    global TAKEOFF_BUSY, LAND_BUSY
+    if TAKEOFF_BUSY or LAND_BUSY:
+        return
+
+    def _worker():
+        global LAND_BUSY
+        LAND_BUSY = True
+        try:
+            drone.land()
+            print("[FLIGHT] LAND OK")
+        except Exception as e:
+            print(f"[FLIGHT] LAND ERROR: {e}")
+        finally:
+            LAND_BUSY = False
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 # ======================================================
@@ -213,23 +278,40 @@ while True:
     if 'u' in keys:
         AUTO_MODE = not AUTO_MODE
         print("AUTO MODE:", AUTO_MODE)
+        if not AUTO_MODE:
+            try:
+                drone.hover()
+            except:
+                pass
         keys.discard('u')
 
     if 't' in keys:
-        drone.takeoff()
+        _start_takeoff_async(drone)
         keys.discard('t')
 
     if 'l' in keys:
-        drone.land()
+        _start_land_async(drone)
         keys.discard('l')
-
-    safety.check(drone)
 
     # =========================
     # AUTO MODE
     # =========================
 
-    if AUTO_MODE:
+    if TAKEOFF_BUSY:
+        CURRENT_OP_STATE = "TAKEOFF"
+        try:
+            drone.hover()
+        except:
+            pass
+
+    elif LAND_BUSY:
+        CURRENT_OP_STATE = "LANDING"
+        try:
+            drone.hover()
+        except:
+            pass
+
+    elif AUTO_MODE:
 
         state = sm.update(target)
         CURRENT_OP_STATE = state
@@ -238,7 +320,7 @@ while True:
             search.run(drone)
 
         elif state in ["TRACK", "RESCUE"]:
-            drone.auto_follow(target, w)
+            drone.auto_follow(target, w, op_state=state)
 
     # =========================
     # MANUAL MODE
@@ -258,6 +340,7 @@ while True:
         if 'e' in keys: yaw = speed
         if 'c' in keys: ud = speed
         if 'z' in keys: ud = -speed
+        if 'x' in keys: ud = -speed
 
         drone.manual(lr, fb, ud, yaw)
 
@@ -276,7 +359,9 @@ while True:
             battery = -1
         last_battery_poll = now
 
-    draw_hud(frame, battery, AUTO_MODE, CURRENT_OP_STATE, target, fps)
+    safety.check(drone, battery_hint=battery)
+
+    draw_hud(frame, battery, AUTO_MODE, CURRENT_OP_STATE, target, fps, TAKEOFF_BUSY, LAND_BUSY)
 
     cv2.imshow("RESCUE DRONE", frame)
 

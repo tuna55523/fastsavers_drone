@@ -25,6 +25,12 @@ from config import (
     RISK_FAST_WATCH_ACUTE,
     RISK_FAST_ALERT_ACUTE,
     RISK_MIN_RAW_FOR_ALERT,
+    RISK_RISE_WATCH_RATE,
+    RISK_RISE_ALERT_RATE,
+    RISK_RISE_WATCH_SECONDS,
+    RISK_RISE_ALERT_SECONDS,
+    RISK_RISE_WATCH_ACUTE,
+    RISK_RISE_ALERT_ACUTE,
 )
 
 
@@ -644,11 +650,43 @@ class IdentityManager:
         fast_alert_seconds = max(0.16, RISK_FAST_ALERT_SECONDS * (1.0 - 0.45 * low_progress))
 
         prev_raw_risk = float(person.get("prev_raw_risk", raw_risk))
+        prev_raw_ts = float(person.get("prev_raw_ts", now))
+        dt_raw = max(1e-3, now - prev_raw_ts)
         risk_rise = raw_risk - prev_raw_risk
-        if risk_rise >= 0.03:
+        raw_rise_rate = max(0.0, risk_rise / dt_raw)
+        person["risk_rise_rate"] = (
+            0.72 * float(person.get("risk_rise_rate", 0.0))
+            + 0.28 * raw_rise_rate
+        )
+        risk_rise_rate = person["risk_rise_rate"]
+
+        if risk_rise >= 0.03 or risk_rise_rate >= RISK_RISE_WATCH_RATE:
             watch_enter_seconds *= 0.78
             alert_enter_seconds *= 0.84
             fast_alert_seconds *= 0.75
+
+        rapid_watch_condition = (
+            raw_risk >= max(0.36, watch_enter - 0.10)
+            and acute_distress >= RISK_RISE_WATCH_ACUTE
+            and risk_rise_rate >= RISK_RISE_WATCH_RATE
+        )
+        if rapid_watch_condition:
+            if person["rapid_watch_since"] is None:
+                person["rapid_watch_since"] = now
+        else:
+            person["rapid_watch_since"] = None
+
+        rapid_alert_condition = (
+            raw_risk >= max(0.54, RISK_MIN_RAW_FOR_ALERT - 0.04, alert_enter - 0.10)
+            and acute_distress >= RISK_RISE_ALERT_ACUTE
+            and low_progress >= 0.62
+            and risk_rise_rate >= RISK_RISE_ALERT_RATE
+        )
+        if rapid_alert_condition:
+            if person["rapid_alert_since"] is None:
+                person["rapid_alert_since"] = now
+        else:
+            person["rapid_alert_since"] = None
 
         # Fast path: if cues are strongly drowning-like, escalate early.
         fast_watch_condition = (
@@ -688,6 +726,18 @@ class IdentityManager:
             if now - person["fast_alert_since"] >= fast_alert_seconds:
                 state = "ALERT"
                 person["alert_since"] = None
+
+        if person["rapid_watch_since"] is not None:
+            if now - person["rapid_watch_since"] >= RISK_RISE_WATCH_SECONDS:
+                if state == "SAFE":
+                    state = "WATCH"
+                person["watch_since"] = None
+
+        if person["rapid_alert_since"] is not None:
+            if now - person["rapid_alert_since"] >= RISK_RISE_ALERT_SECONDS:
+                state = "ALERT"
+                person["alert_since"] = None
+                person["watch_to_alert_since"] = None
 
         if state == "SAFE":
             person["watch_to_alert_since"] = None
@@ -743,6 +793,7 @@ class IdentityManager:
 
         person["alert_state"] = state
         person["prev_raw_risk"] = raw_risk
+        person["prev_raw_ts"] = now
 
         if state == "ALERT":
             stable_risk = max(raw_risk, 0.80)
@@ -797,9 +848,14 @@ class IdentityManager:
                     "watch_to_alert_since": None,
                     "fast_watch_since": None,
                     "fast_alert_since": None,
+                    "rapid_watch_since": None,
+                    "rapid_alert_since": None,
                     "risk_memory": 0.0,
                     "risk": 0.0,
                     "raw_risk": 0.0,
+                    "risk_rise_rate": 0.0,
+                    "prev_raw_risk": 0.0,
+                    "prev_raw_ts": now,
                     "acute_distress": 0.0,
                     "last_seen": now,
                 }
@@ -889,6 +945,7 @@ class IdentityManager:
             person["risk"] = self.apply_risk_persistence(
                 person, person["raw_risk"], person["acute_distress"], now
             )
+            person["features"]["risk_rise_rate"] = person.get("risk_rise_rate", 0.0)
 
             persons.append({
                 "id": matched_id,
@@ -898,6 +955,7 @@ class IdentityManager:
                 "source": det.get("det_source", "person"),
                 "risk": person["risk"],
                 "raw_risk": person["raw_risk"],
+                "risk_rise_rate": person.get("risk_rise_rate", 0.0),
                 "alert_state": person["alert_state"],
                 "acute_distress": person["acute_distress"],
                 "features": person["features"],
