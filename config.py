@@ -1,4 +1,5 @@
 MODEL_PATH = "models/active_model.pt"
+OBJECT_MODEL_PATH = "models/yolo11n.pt"
 POSE_MODEL_PATH = "models/yolo11s-pose.pt"
 POSE_MODEL_ID = "yolo11s-pose.pt"
 POSE_AUTO_DOWNLOAD = False
@@ -9,7 +10,19 @@ SIM_VIDEO_PATH = "videos/video8.mp4"
 SIM_LOOP_VIDEO = True
 SIM_COMMAND_LOG_PATH = "logs/sim_commands.csv"
 
-CONF_THRESHOLD = 0.4
+CONF_THRESHOLD = 0.28
+OBJECT_DETECTION_ENABLED = True
+OBJECT_CONF_THRESHOLD = 0.24
+OBJECT_DISPLAY_CLASSES = [
+    "boat",
+    "surfboard",
+    "kite",
+    "sports ball",
+    "frisbee",
+    "bottle",
+]
+OBJECT_MAX_RESULTS = 6
+OBJECT_MIN_AREA_RATIO = 0.0012
 POSE_ENABLED = True
 POSE_CONF_THRESHOLD = 0.25
 POSE_MIN_KEYPOINT_CONF = 0.25
@@ -68,8 +81,8 @@ BENCHMARK_RESIZE = True
 # Runtime performance tuning
 BATTERY_POLL_INTERVAL_SEC = 1.0
 
-# Water-region gating for person detection (helps reduce false positives above waterline)
-WATER_FILTER_ENABLED = False
+# Water-region gating for sea/drowning scenarios.
+WATER_FILTER_ENABLED = True
 WATER_LINE_RATIO = 0.55
 
 IGNORE_CLASSES = [
