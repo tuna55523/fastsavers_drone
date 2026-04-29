@@ -1,0 +1,19 @@
+run_mode: sim
+sim_video_path: videos/sample_follow.mp4
+frame_width: 960
+frame_height: 720
+
+manual_speed: 80
+target_area: 85000
+
+state_machine:
+  lock_confirm_sec: 0.6
+  lost_timeout_sec: 0.7
+  reacquire_timeout_sec: 3.0
+  search_sweep_yaw: 24
+  search_sweep_toggle_sec: 0.65
+
+logging:
+  save_event_log: true
+  save_command_log: true
+  save_metrics_log: true

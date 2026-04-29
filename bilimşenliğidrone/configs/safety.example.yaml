@@ -1,0 +1,19 @@
+safety:
+  auto_hover_on_stream_stale: true
+  stream_stale_sec: 0.50
+  failsafe_auto_land: true
+  min_battery_percent: 25
+  rc_timeout_sec: 0.35
+  geofence_enabled: true
+  geofence_radius_m: 25
+  geofence_height_m: 10
+
+override:
+  manual_override_key: U
+  emergency_land_key: L
+  emergency_hover_key: H
+
+validation:
+  require_imu_healthy: true
+  require_vision_healthy: true
+  require_link_healthy: true

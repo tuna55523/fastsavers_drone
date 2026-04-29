@@ -1,0 +1,5 @@
+﻿model_name: person_tracking_best_v8n_768.pt
+source_run: runs/detect/runs/merged_person3/v8n_e80_768/weights/best.pt
+imgsz: 768
+note: user requested v9n_e90_768, available checkpoint was v8n_e80_768 best.pt
+created_at: 2026-04-28
