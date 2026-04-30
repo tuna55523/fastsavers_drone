@@ -39,7 +39,11 @@ class GamepadMapper {
     private var r1Pressed: Boolean = false
     private var l2Pressed: Boolean = false
     private var r2Pressed: Boolean = false
-    private var activeControllerDeviceId: Int? = null
+    // PS4 controller presents two separate logical devices on Android: one for axis/motion
+    // events and one for key/button events. Tracking them separately prevents one channel
+    // from being silently rejected when they arrive with different deviceIds.
+    private var activeMotionDeviceId: Int? = null
+    private var activeKeyDeviceId: Int? = null
     private var lastMotionEventMs: Long = 0L
     private var lastKeyEventMs: Long = 0L
 
@@ -55,7 +59,7 @@ class GamepadMapper {
     fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (event.action != MotionEvent.ACTION_MOVE) return false
         if (!isGamepadInputDevice(event.device, event.source)) return false
-        if (!acceptDevice(event.deviceId)) return false
+        if (!acceptMotionDevice(event.deviceId)) return false
         lastMotionEventMs = System.currentTimeMillis()
 
         leftStickX = readCenteredAxis(
@@ -64,13 +68,10 @@ class GamepadMapper {
             MotionEvent.AXIS_HAT_X,
         )
 
-        // Different gamepads expose right stick vertical on different axes.
-        rightStickY = readCenteredAxis(
-            event,
-            MotionEvent.AXIS_RY,
-            MotionEvent.AXIS_RZ,
-            MotionEvent.AXIS_Z,
-        )
+        // On PS4 DualShock 4, AXIS_RZ and AXIS_Z are trigger axes that rest at -1.0.
+        // Falling back to them causes a spurious ud=+45 (full-up) command with no input.
+        // AXIS_RY is the correct right-stick-Y axis across all standard gamepad profiles.
+        rightStickY = readCenteredAxis(event, MotionEvent.AXIS_RY)
 
         rightTriggerAxis = readTriggerAxis(
             event,
@@ -87,7 +88,7 @@ class GamepadMapper {
 
     fun onKeyDown(event: KeyEvent): List<Action> {
         if (!isGamepadInputDevice(event.device, event.source)) return emptyList()
-        if (!acceptDevice(event.deviceId)) return emptyList()
+        if (!acceptKeyDevice(event.deviceId)) return emptyList()
         lastKeyEventMs = System.currentTimeMillis()
 
         val actions = mutableListOf<Action>()
@@ -129,7 +130,7 @@ class GamepadMapper {
 
     fun onKeyUp(event: KeyEvent): Boolean {
         if (!isGamepadInputDevice(event.device, event.source)) return false
-        if (!acceptDevice(event.deviceId)) return false
+        if (!acceptKeyDevice(event.deviceId)) return false
         lastKeyEventMs = System.currentTimeMillis()
 
         when (event.keyCode) {
@@ -145,8 +146,19 @@ class GamepadMapper {
     fun currentRcCommand(): RcCommand {
         expireStaleInputs()
 
-        val forward = maxOf(shapeTrigger(rightTriggerAxis), if (r2Pressed) 1f else 0f)
-        val backward = maxOf(shapeTrigger(leftTriggerAxis), if (l2Pressed) 1f else 0f)
+        // Prefer the analog axis for proportional control. Fall back to the digital button
+        // only when no axis value is present — using maxOf would override a partial axis
+        // press with full-speed whenever the button is also held.
+        val forward = when {
+            rightTriggerAxis > 0f -> shapeTrigger(rightTriggerAxis)
+            r2Pressed -> 1f
+            else -> 0f
+        }
+        val backward = when {
+            leftTriggerAxis > 0f -> shapeTrigger(leftTriggerAxis)
+            l2Pressed -> 1f
+            else -> 0f
+        }
 
         val fbRaw = forward - backward
         val fb = scaleSigned(fbRaw, maxForwardBack)
@@ -197,11 +209,12 @@ class GamepadMapper {
         r2Pressed = false
         lastMotionEventMs = 0L
         lastKeyEventMs = 0L
-        activeControllerDeviceId = null
+        activeMotionDeviceId = null
+        activeKeyDeviceId = null
     }
 
     fun onInputDeviceRemoved(deviceId: Int) {
-        if (activeControllerDeviceId == deviceId) {
+        if (activeMotionDeviceId == deviceId || activeKeyDeviceId == deviceId) {
             reset()
         }
     }
@@ -262,10 +275,20 @@ class GamepadMapper {
         return sign * abs(clamped).pow(exponent)
     }
 
-    private fun acceptDevice(deviceId: Int): Boolean {
-        val active = activeControllerDeviceId
+    private fun acceptMotionDevice(deviceId: Int): Boolean {
+        val active = activeMotionDeviceId
         return if (active == null || active == deviceId) {
-            activeControllerDeviceId = deviceId
+            activeMotionDeviceId = deviceId
+            true
+        } else {
+            false
+        }
+    }
+
+    private fun acceptKeyDevice(deviceId: Int): Boolean {
+        val active = activeKeyDeviceId
+        return if (active == null || active == deviceId) {
+            activeKeyDeviceId = deviceId
             true
         } else {
             false
