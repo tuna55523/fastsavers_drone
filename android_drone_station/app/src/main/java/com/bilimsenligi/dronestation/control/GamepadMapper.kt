@@ -39,6 +39,13 @@ class GamepadMapper {
     private var r1Pressed: Boolean = false
     private var l2Pressed: Boolean = false
     private var r2Pressed: Boolean = false
+    // Once we've seen an analog trigger axis fire, we trust *only* the axis until it goes
+    // stale. PS4 controllers send both AXIS_RTRIGGER motion events and KEYCODE_BUTTON_R2
+    // key events; if the keyUp is delayed (or arrives on a different deviceId), the button
+    // latch would otherwise override the (correctly zero) axis and drive the drone full-
+    // forward. The "axis active" flag closes that fallback path while analog data is live.
+    private var leftTriggerAxisActive: Boolean = false
+    private var rightTriggerAxisActive: Boolean = false
     // PS4 controller presents two separate logical devices on Android: one for axis/motion
     // events and one for key/button events. Tracking them separately prevents one channel
     // from being silently rejected when they arrive with different deviceIds.
@@ -49,7 +56,9 @@ class GamepadMapper {
 
     private val axisDeadzone = 0.12f
     private val triggerDeadzone = 0.05f
-    private val analogInputTimeoutMs = 450L
+    // Was 450ms; reduced because that window let the drone coast forward for nearly half
+    // a second after the user released R2 when the release motion-event was missed.
+    private val analogInputTimeoutMs = 300L
     private val buttonInputTimeoutMs = 2500L
     private val maxForwardBack = 65
     private val maxLeftRight = 40
@@ -83,6 +92,10 @@ class GamepadMapper {
             MotionEvent.AXIS_LTRIGGER,
             MotionEvent.AXIS_BRAKE,
         )
+        // Latch "this controller delivers analog trigger data" the first time we see a
+        // non-zero value. From that point on, button latches are ignored for forward/back.
+        if (rightTriggerAxis > 0f) rightTriggerAxisActive = true
+        if (leftTriggerAxis > 0f) leftTriggerAxisActive = true
         return true
     }
 
@@ -146,16 +159,17 @@ class GamepadMapper {
     fun currentRcCommand(): RcCommand {
         expireStaleInputs()
 
-        // Prefer the analog axis for proportional control. Fall back to the digital button
-        // only when no axis value is present — using maxOf would override a partial axis
-        // press with full-speed whenever the button is also held.
+        // While analog trigger data is live, trust *only* the axis. Falling through to the
+        // button latch when axis goes to 0 would re-trigger full-forward on every release
+        // because PS4 keyUp events can lag the axis by hundreds of ms (or be lost entirely
+        // when key/motion events come from different logical deviceIds).
         val forward = when {
-            rightTriggerAxis > 0f -> shapeTrigger(rightTriggerAxis)
+            rightTriggerAxisActive -> shapeTrigger(rightTriggerAxis)
             r2Pressed -> 1f
             else -> 0f
         }
         val backward = when {
-            leftTriggerAxis > 0f -> shapeTrigger(leftTriggerAxis)
+            leftTriggerAxisActive -> shapeTrigger(leftTriggerAxis)
             l2Pressed -> 1f
             else -> 0f
         }
@@ -203,6 +217,8 @@ class GamepadMapper {
         rightStickY = 0f
         leftTriggerAxis = 0f
         rightTriggerAxis = 0f
+        leftTriggerAxisActive = false
+        rightTriggerAxisActive = false
         l1Pressed = false
         r1Pressed = false
         l2Pressed = false
@@ -302,6 +318,13 @@ class GamepadMapper {
             rightStickY = 0f
             leftTriggerAxis = 0f
             rightTriggerAxis = 0f
+            // Once the analog channel goes silent, drop the "axis active" latch *and* the
+            // button latches together. Otherwise the button fallback kicks back in with a
+            // ghost l2/r2 press still set, producing a full-throttle command from nothing.
+            leftTriggerAxisActive = false
+            rightTriggerAxisActive = false
+            l2Pressed = false
+            r2Pressed = false
             lastMotionEventMs = 0L
         }
         if (lastKeyEventMs > 0L && now - lastKeyEventMs > buttonInputTimeoutMs) {
