@@ -11,11 +11,19 @@ class TrackingAssistMixer {
         val udKp: Float = 10f,
         val fbKp: Float = 12f,
         val desiredSize: Float = 0.22f,
+<<<<<<< HEAD
         val sizeDeadzone: Float = 0.08f,
         val maxFbAssistAbs: Int = 18,
         val minConfidence: Float = 0.50f,
         val deadzoneX: Float = 0.12f,
         val deadzoneY: Float = 0.16f,
+=======
+        val sizeDeadzone: Float = 0.03f,
+        val maxFbAssistAbs: Int = 42,
+        val minConfidence: Float = 0.16f,
+        val deadzoneX: Float = 0.04f,
+        val deadzoneY: Float = 0.05f,
+>>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
         /**
          * Tracking sample akisi kesildiginde komutlarin ne kadar hizli sifira sonecegini belirler.
          * Ornek: staleTimeoutMs=900 ise, 300ms'de yaklasik sifira iner.
@@ -45,8 +53,12 @@ class TrackingAssistMixer {
             return manual
         }
 
-        if (sample.targetId >= 0 && sample.targetId != trackingStatus.targetIndex) {
-            return manual
+        if (sample.targetId >= 0 && trackingStatus.targetIndex > 0) {
+            val matchesZeroBased = sample.targetId == trackingStatus.targetIndex
+            val matchesOneBased = sample.targetId == (trackingStatus.targetIndex + 1)
+            if (!matchesZeroBased && !matchesOneBased) {
+                return manual
+            }
         }
 
         val fadeMs = gains.fadeOutMs.coerceIn(0L, staleTimeoutMs)

@@ -31,6 +31,12 @@ class TelloClient(
     @Volatile
     private var commandSocket: DatagramSocket? = null
 
+    // Dedicated RC socket so high-rate `rc x y z w` packets never contend with the
+    // command socket's `sendLock` (held for up to 2s during battery?/takeoff/streamon/etc.)
+    // and never get delayed by drainPendingResponses or keep-alive receives.
+    @Volatile
+    private var rcSocket: DatagramSocket? = null
+
     @Volatile
     private var stateSocket: DatagramSocket? = null
 
@@ -44,8 +50,13 @@ class TelloClient(
     private var listener: Listener? = null
 
     private val telloAddress: InetAddress = InetAddress.getByName(telloIp)
+    private val telloSocketAddress: InetSocketAddress = InetSocketAddress(telloAddress, commandPort)
     private val sendLock = Any()
     private val lastStateRef = AtomicReference<TelloState?>(null)
+    // Pre-allocated buffer for the RC command path: avoids per-tick ByteArray/DatagramPacket
+    // garbage at 20 Hz and keeps the path lock-free aside from the StringBuilder.
+    private val rcBuilder = StringBuilder(32)
+    private val rcBuffer = ByteArray(48)
 
     fun setListener(listener: Listener?) {
         this.listener = listener
@@ -60,6 +71,11 @@ class TelloClient(
         return try {
             commandSocket = DatagramSocket().apply {
                 soTimeout = 2000
+            }
+            // RC socket is connected-mode UDP: skips per-send route lookup and lets the
+            // OS reject any unrelated inbound traffic. We never read from it.
+            rcSocket = DatagramSocket().apply {
+                connect(telloSocketAddress)
             }
             connected = false
 
@@ -125,6 +141,12 @@ class TelloClient(
         }
         commandSocket = null
 
+        try {
+            rcSocket?.close()
+        } catch (_: Exception) {
+        }
+        rcSocket = null
+
         log("[TELLO] baglanti kapatildi")
     }
 
@@ -187,7 +209,7 @@ class TelloClient(
     }
 
     fun sendRcControl(lr: Int, fb: Int, ud: Int, yaw: Int) {
-        val socket = commandSocket ?: return
+        val socket = rcSocket ?: return
         if (!connected) return
 
         val clampedLr = lr.coerceIn(-100, 100)
@@ -195,15 +217,22 @@ class TelloClient(
         val clampedUd = ud.coerceIn(-100, 100)
         val clampedYaw = yaw.coerceIn(-100, 100)
 
-        val cmd = "rc $clampedLr $clampedFb $clampedUd $clampedYaw"
-        val payload = cmd.toByteArray(StandardCharsets.UTF_8)
-        val packet = DatagramPacket(payload, payload.size, telloAddress, commandPort)
-
-        synchronized(sendLock) {
-            try {
-                socket.send(packet)
-            } catch (_: Exception) {
-            }
+        // Lock-free path: dedicated socket, dedicated buffer. Single-threaded caller
+        // (rcScheduler) so no synchronization needed on the buffer either.
+        val sb = rcBuilder
+        sb.setLength(0)
+        sb.append("rc ").append(clampedLr).append(' ')
+            .append(clampedFb).append(' ')
+            .append(clampedUd).append(' ')
+            .append(clampedYaw)
+        val length = sb.length
+        for (i in 0 until length) {
+            rcBuffer[i] = sb[i].code.toByte()
+        }
+        try {
+            // Connected-mode UDP: address/port already bound, no DatagramPacket dest needed.
+            socket.send(DatagramPacket(rcBuffer, length))
+        } catch (_: Exception) {
         }
     }
 

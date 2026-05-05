@@ -113,12 +113,25 @@ class MainActivity : AppCompatActivity(),
     private val reconnectStateTimeoutMs = 8500L
     private val maxReconnectAttempts = 6
     private val trackingSampleStaleMs = 900L
+<<<<<<< HEAD
     private val touchStrafeMax = 42
     private val touchForwardBackMax = 62
     private val touchUpDownRate = 42
     private val touchYawRate = 28
     private val rcNeutralDeadband = 3
     private val rcSlewStep = 8
+=======
+    // Son-gun guvenli profil: panel komutlarini daha kontrollu yap.
+    private val touchStrafeMax = 28
+    private val touchForwardBackMax = 40
+    private val touchUpDownRate = 24
+    private val touchYawRate = 22
+    // 50ms RC tikinde eksen basina maksimum degisim adimi.
+    private val rcSlewLrStep = 6
+    private val rcSlewFbStep = 7
+    private val rcSlewUdStep = 5
+    private val rcSlewYawStep = 5
+>>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
 
     @Volatile
     private var isAirborne = false
@@ -176,6 +189,12 @@ class MainActivity : AppCompatActivity(),
 
     @Volatile
     private var controllerRecoveryPending = false
+
+    @Volatile
+    private var lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
+
+    @Volatile
+    private var lastTrackerInitWarnMs = 0L
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var wifiBindCallback: ConnectivityManager.NetworkCallback? = null
@@ -358,6 +377,7 @@ class MainActivity : AppCompatActivity(),
         gamepadMapper.reset()
         lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
         resetTouchManual()
+        lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
@@ -482,6 +502,7 @@ class MainActivity : AppCompatActivity(),
                     nextReconnectAtMs = 0L
                     connectedAtMs = System.currentTimeMillis()
                     latestBatteryPercent = battery
+                    lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
                     autoReconnectEnabled = true
                 } else {
                     autoReconnectEnabled = false
@@ -512,6 +533,7 @@ class MainActivity : AppCompatActivity(),
             connectedAtMs = 0L
             latestBatteryPercent = null
             latestTrackingSample = null
+            lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
             resetTouchManual()
             releaseWifiLock()
             unbindNetwork()
@@ -602,9 +624,15 @@ class MainActivity : AppCompatActivity(),
                         rc.upDown == 0 &&
                         rc.yaw == 0
                     ) {
+                        lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
                         return@scheduleAtFixedRate
                     }
+<<<<<<< HEAD
                     telloClient.sendRcControl(rc.leftRight, rc.forwardBack, rc.upDown, rc.yaw)
+=======
+                    val smooth = applyRcSlew(mixed)
+                    telloClient.sendRcControl(smooth.leftRight, smooth.forwardBack, smooth.upDown, smooth.yaw)
+>>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
                 } catch (_: Exception) {
                 }
             },
@@ -618,7 +646,17 @@ class MainActivity : AppCompatActivity(),
                 try {
                     if (!trackingManager.status().enabled) return@scheduleAtFixedRate
                     if (!telloVideo.isRunning()) return@scheduleAtFixedRate
-                    if (!onDeviceTracker.isReady()) return@scheduleAtFixedRate
+                    if (!onDeviceTracker.isReady()) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastTrackerInitWarnMs > 3000L) {
+                            lastTrackerInitWarnMs = now
+                            val why = onDeviceTracker.latestInitError()
+                            if (!why.isNullOrBlank()) {
+                                postCommandText("Takip modeli hazir degil: $why")
+                            }
+                        }
+                        return@scheduleAtFixedRate
+                    }
 
                     val now = System.currentTimeMillis()
                     val externalFresh = latestTrackingSample?.let { now - it.timestampMs <= 700L } == true
@@ -836,6 +874,10 @@ class MainActivity : AppCompatActivity(),
                 GamepadMapper.Action.TRACKING_STOP -> {
                     trackingManager.stop()
                     latestTrackingSample = null
+                    lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
+                    if (telloClient.isConnected()) {
+                        telloClient.sendRcControl(0, 0, 0, 0)
+                    }
                     runOnUiThread { updateTrackingUi() }
                     postCommandText("Insan takibi durduruldu")
                 }
@@ -1069,6 +1111,7 @@ class MainActivity : AppCompatActivity(),
         )
     }
 
+<<<<<<< HEAD
     private fun stabilizeRcCommand(command: GamepadMapper.RcCommand): GamepadMapper.RcCommand {
         fun deadband(value: Int): Int = if (kotlin.math.abs(value) <= rcNeutralDeadband) 0 else value
         fun slew(previous: Int, target: Int): Int {
@@ -1092,6 +1135,27 @@ class MainActivity : AppCompatActivity(),
         )
         lastRcCommand = smoothed
         return smoothed
+=======
+    private fun applyRcSlew(target: GamepadMapper.RcCommand): GamepadMapper.RcCommand {
+        val prev = lastSentRc
+        val next = GamepadMapper.RcCommand(
+            leftRight = slewAxis(prev.leftRight, target.leftRight, rcSlewLrStep),
+            forwardBack = slewAxis(prev.forwardBack, target.forwardBack, rcSlewFbStep),
+            upDown = slewAxis(prev.upDown, target.upDown, rcSlewUdStep),
+            yaw = slewAxis(prev.yaw, target.yaw, rcSlewYawStep),
+        )
+        lastSentRc = next
+        return next
+    }
+
+    private fun slewAxis(previous: Int, target: Int, step: Int): Int {
+        val safeStep = step.coerceAtLeast(1)
+        return when {
+            target > previous + safeStep -> previous + safeStep
+            target < previous - safeStep -> previous - safeStep
+            else -> target
+        }.coerceIn(-100, 100)
+>>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
     }
 
     private fun resetTouchManual() {
@@ -1187,8 +1251,8 @@ class MainActivity : AppCompatActivity(),
 
     private fun updateTouchControlVisuals() {
         val gamepad = gamepadMapper.currentRcCommand()
-        val nx = (gamepad.leftRight / 40f).coerceIn(-1f, 1f)
-        val ny = (-gamepad.forwardBack / 65f).coerceIn(-1f, 1f)
+        val nx = (gamepad.leftRight / 34f).coerceIn(-1f, 1f)
+        val ny = (-gamepad.forwardBack / 42f).coerceIn(-1f, 1f)
         touchJoysticks.forEach { joystick ->
             if (!joystick.isUserActive()) {
                 joystick.setVisualNormalized(nx, ny)
