@@ -30,13 +30,15 @@ class GamepadMapper {
         val yaw: Int,
     )
 
-    private var leftStickX: Float = 0f
-    private var rightStickY: Float = 0f
+    private var leftStickY: Float = 0f
+    private var rightStickX: Float = 0f
     private var leftTriggerAxis: Float = 0f
     private var rightTriggerAxis: Float = 0f
+    private var hasLeftTriggerAxis: Boolean = false
+    private var hasRightTriggerAxis: Boolean = false
+    private var leftTriggerBaseline: Float? = null
+    private var rightTriggerBaseline: Float? = null
 
-    private var l1Pressed: Boolean = false
-    private var r1Pressed: Boolean = false
     private var l2Pressed: Boolean = false
     private var r2Pressed: Boolean = false
     // Once we've seen an analog trigger axis fire, we trust *only* the axis until it goes
@@ -46,24 +48,23 @@ class GamepadMapper {
     // forward. The "axis active" flag closes that fallback path while analog data is live.
     private var leftTriggerAxisActive: Boolean = false
     private var rightTriggerAxisActive: Boolean = false
-    // PS4 controller presents two separate logical devices on Android: one for axis/motion
-    // events and one for key/button events. Tracking them separately prevents one channel
-    // from being silently rejected when they arrive with different deviceIds.
+    // Farkli Android cihazlari kolu birden fazla deviceId olarak raporlayabiliyor.
+    // Tek bir id'ye kilitlenmek keyUp/motion event kaybina ve "tek yone gitme"ye yol aciyordu.
+    // Bu nedenle sadece tip (gamepad/joystick) kontrolu yapip tum uyumlu deviceId'leri kabul ediyoruz.
     private var activeMotionDeviceId: Int? = null
     private var activeKeyDeviceId: Int? = null
     private var lastMotionEventMs: Long = 0L
     private var lastKeyEventMs: Long = 0L
 
-    private val axisDeadzone = 0.12f
-    private val triggerDeadzone = 0.05f
-    // Was 450ms; reduced because that window let the drone coast forward for nearly half
-    // a second after the user released R2 when the release motion-event was missed.
-    private val analogInputTimeoutMs = 300L
-    private val buttonInputTimeoutMs = 2500L
-    private val maxForwardBack = 65
-    private val maxLeftRight = 40
-    private val maxUpDown = 45
-    private val yawByBumper = 42
+    private val axisDeadzone = 0.16f
+    private val triggerDeadzone = 0.06f
+    // Kisalan timeout: kayip keyUp/motion event oldugunda tek yone gitme daha hizli sifirlanir.
+    private val analogInputTimeoutMs = 240L
+    private val buttonInputTimeoutMs = 650L
+    // Son-gun guvenli kontrol profili: anlik "full" tepkileri azalt.
+    private val maxForwardBack = 42
+    private val maxUpDown = 30
+    private val maxYawByRightStick = 34
 
     fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (event.action != MotionEvent.ACTION_MOVE) return false
@@ -71,27 +72,24 @@ class GamepadMapper {
         if (!acceptMotionDevice(event.deviceId)) return false
         lastMotionEventMs = System.currentTimeMillis()
 
-        leftStickX = readCenteredAxis(
-            event,
-            MotionEvent.AXIS_X,
-            MotionEvent.AXIS_HAT_X,
-        )
+        // Yeni istek: sol joystick yukari/asagi (ud), sag joystick saga/sola (yaw).
+        leftStickY = readCenteredAxis(event, MotionEvent.AXIS_Y)
+        rightStickX = readCenteredAxis(event, MotionEvent.AXIS_RX)
 
-        // On PS4 DualShock 4, AXIS_RZ and AXIS_Z are trigger axes that rest at -1.0.
-        // Falling back to them causes a spurious ud=+45 (full-up) command with no input.
-        // AXIS_RY is the correct right-stick-Y axis across all standard gamepad profiles.
-        rightStickY = readCenteredAxis(event, MotionEvent.AXIS_RY)
-
-        rightTriggerAxis = readTriggerAxis(
+        rightTriggerAxis = readTriggerAxisFromBestSource(
             event,
             MotionEvent.AXIS_RTRIGGER,
             MotionEvent.AXIS_GAS,
+            isRight = true,
         )
-        leftTriggerAxis = readTriggerAxis(
+        leftTriggerAxis = readTriggerAxisFromBestSource(
             event,
             MotionEvent.AXIS_LTRIGGER,
             MotionEvent.AXIS_BRAKE,
+            isRight = false,
         )
+        hasRightTriggerAxis = hasAxis(event, MotionEvent.AXIS_RTRIGGER) || hasAxis(event, MotionEvent.AXIS_GAS)
+        hasLeftTriggerAxis = hasAxis(event, MotionEvent.AXIS_LTRIGGER) || hasAxis(event, MotionEvent.AXIS_BRAKE)
         // Latch "this controller delivers analog trigger data" the first time we see a
         // non-zero value. From that point on, button latches are ignored for forward/back.
         if (rightTriggerAxis > 0f) rightTriggerAxisActive = true
@@ -108,8 +106,9 @@ class GamepadMapper {
         val firstPress = event.repeatCount == 0
 
         when (event.keyCode) {
-            KeyEvent.KEYCODE_BUTTON_L1 -> l1Pressed = true
-            KeyEvent.KEYCODE_BUTTON_R1 -> r1Pressed = true
+            // L1/R1 bilincli olarak bos birakildi.
+            KeyEvent.KEYCODE_BUTTON_L1 -> {}
+            KeyEvent.KEYCODE_BUTTON_R1 -> {}
             KeyEvent.KEYCODE_BUTTON_L2 -> l2Pressed = true
             KeyEvent.KEYCODE_BUTTON_R2 -> r2Pressed = true
 
@@ -124,8 +123,9 @@ class GamepadMapper {
             // PS4 Cross button maps to BUTTON_A on Android.
             KeyEvent.KEYCODE_BUTTON_A -> if (firstPress) actions.add(Action.TAKEOFF_LAND_TOGGLE)
 
-            // PS4 Circle button maps to BUTTON_B on Android.
-            KeyEvent.KEYCODE_BUTTON_B -> if (firstPress) actions.add(Action.TRACKING_START)
+            // PS4 Circle button maps to BUTTON_B on Android (bazı cihazlarda BUTTON_C gelebilir).
+            KeyEvent.KEYCODE_BUTTON_B,
+            KeyEvent.KEYCODE_BUTTON_C -> if (firstPress) actions.add(Action.TRACKING_START)
 
             // PS4 Square button maps to BUTTON_X on Android.
             KeyEvent.KEYCODE_BUTTON_X -> if (firstPress) actions.add(Action.TRACKING_STOP)
@@ -147,8 +147,8 @@ class GamepadMapper {
         lastKeyEventMs = System.currentTimeMillis()
 
         when (event.keyCode) {
-            KeyEvent.KEYCODE_BUTTON_L1 -> l1Pressed = false
-            KeyEvent.KEYCODE_BUTTON_R1 -> r1Pressed = false
+            KeyEvent.KEYCODE_BUTTON_L1 -> return true
+            KeyEvent.KEYCODE_BUTTON_R1 -> return true
             KeyEvent.KEYCODE_BUTTON_L2 -> l2Pressed = false
             KeyEvent.KEYCODE_BUTTON_R2 -> r2Pressed = false
             else -> return false
@@ -165,12 +165,13 @@ class GamepadMapper {
         // when key/motion events come from different logical deviceIds).
         val forward = when {
             rightTriggerAxisActive -> shapeTrigger(rightTriggerAxis)
-            r2Pressed -> 1f
+            // Sadece analog eksen yoksa dijital fallback kullan.
+            !hasRightTriggerAxis && r2Pressed -> 0.42f
             else -> 0f
         }
         val backward = when {
             leftTriggerAxisActive -> shapeTrigger(leftTriggerAxis)
-            l2Pressed -> 1f
+            !hasLeftTriggerAxis && l2Pressed -> 0.42f
             else -> 0f
         }
 
@@ -178,20 +179,11 @@ class GamepadMapper {
         val fb = scaleSigned(fbRaw, maxForwardBack)
 
         // Requirement: left analog helps steering while moving forward/back.
-        val lr = if (abs(fb) >= 4) {
-            scaleSigned(shapeSigned(applyDeadzone(leftStickX), exponent = 0.88f), maxLeftRight)
-        } else {
-            0
-        }
+        val lr = 0
 
-        // Requirement: right analog controls up/down.
-        val ud = scaleSigned(shapeSigned(-applyDeadzone(rightStickY), exponent = 0.88f), maxUpDown)
+        val ud = scaleSigned(shapeSigned(-applyDeadzone(leftStickY), exponent = 1.12f), maxUpDown)
 
-        val yaw = when {
-            r1Pressed && !l1Pressed -> yawByBumper
-            l1Pressed && !r1Pressed -> -yawByBumper
-            else -> 0
-        }
+        val yaw = scaleSigned(shapeSigned(applyDeadzone(rightStickX), exponent = 1.08f), maxYawByRightStick)
 
         return RcCommand(
             leftRight = lr,
@@ -202,25 +194,25 @@ class GamepadMapper {
     }
 
     fun hasManualInput(): Boolean {
-        return kotlin.math.abs(leftStickX) >= axisDeadzone ||
-            kotlin.math.abs(rightStickY) >= axisDeadzone ||
+        return kotlin.math.abs(leftStickY) >= axisDeadzone ||
+            kotlin.math.abs(rightStickX) >= axisDeadzone ||
             leftTriggerAxis >= 0.05f ||
             rightTriggerAxis >= 0.05f ||
-            l1Pressed ||
-            r1Pressed ||
-            l2Pressed ||
-            r2Pressed
+            (!hasLeftTriggerAxis && l2Pressed) ||
+            (!hasRightTriggerAxis && r2Pressed)
     }
 
     fun reset() {
-        leftStickX = 0f
-        rightStickY = 0f
+        leftStickY = 0f
+        rightStickX = 0f
         leftTriggerAxis = 0f
         rightTriggerAxis = 0f
+        hasLeftTriggerAxis = false
+        hasRightTriggerAxis = false
+        leftTriggerBaseline = null
+        rightTriggerBaseline = null
         leftTriggerAxisActive = false
         rightTriggerAxisActive = false
-        l1Pressed = false
-        r1Pressed = false
         l2Pressed = false
         r2Pressed = false
         lastMotionEventMs = 0L
@@ -256,20 +248,50 @@ class GamepadMapper {
         return 0f
     }
 
-    private fun readTriggerAxis(event: MotionEvent, vararg axes: Int): Float {
-        val device = event.device ?: return 0f
-        for (axis in axes) {
-            val range = device.getMotionRange(axis, event.source) ?: continue
-            val value = event.getAxisValue(axis)
-            val normalized = if (range.min < 0f && range.max > 0f) {
-                if (abs(value) <= maxOf(range.flat, triggerDeadzone)) continue
-                ((value - range.min) / (range.max - range.min)).coerceIn(0f, 1f)
-            } else {
-                value.coerceIn(0f, 1f)
-            }
-            if (normalized > 0.02f) return normalized
+    private fun readTriggerAxisFromBestSource(
+        event: MotionEvent,
+        primaryAxis: Int,
+        fallbackAxis: Int,
+        isRight: Boolean,
+    ): Float {
+        val primary = readTriggerAxisNormalized(event, primaryAxis, isRight)
+        if (primary != null) return primary
+        val fallback = readTriggerAxisNormalized(event, fallbackAxis, isRight)
+        return fallback ?: 0f
+    }
+
+    private fun readTriggerAxisNormalized(event: MotionEvent, axis: Int, isRight: Boolean): Float? {
+        val device = event.device ?: return null
+        val range = device.getMotionRange(axis, event.source) ?: return null
+        val raw = event.getAxisValue(axis)
+        val normalized = if (range.min < 0f && range.max > 0f) {
+            ((raw - range.min) / (range.max - range.min)).coerceIn(0f, 1f)
+        } else {
+            raw.coerceIn(0f, 1f)
         }
-        return 0f
+        val active = baselineToActivation(normalized, isRight)
+        return if (active > 0.02f) active else 0f
+    }
+
+    private fun baselineToActivation(current: Float, isRight: Boolean): Float {
+        val baseline = if (isRight) rightTriggerBaseline else leftTriggerBaseline
+        if (baseline == null) {
+            if (isRight) rightTriggerBaseline = current else leftTriggerBaseline = current
+            return 0f
+        }
+
+        val upTravel = (1f - baseline).coerceAtLeast(0.08f)
+        val downTravel = baseline.coerceAtLeast(0.08f)
+        val deltaUp = (current - baseline) / upTravel
+        val deltaDown = (baseline - current) / downTravel
+        val active = maxOf(deltaUp, deltaDown).coerceIn(0f, 1f)
+
+        // Eksende ufak oynama varsa baseline'i yavasca guncelle (drift temizligi).
+        if (active < 0.04f) {
+            val adjusted = baseline * 0.98f + current * 0.02f
+            if (isRight) rightTriggerBaseline = adjusted else leftTriggerBaseline = adjusted
+        }
+        return active
     }
 
     private fun applyDeadzone(value: Float): Float {
@@ -279,10 +301,9 @@ class GamepadMapper {
     private fun shapeTrigger(value: Float): Float {
         val clamped = value.coerceIn(0f, 1f)
         if (clamped <= triggerDeadzone) return 0f
-
         val normalized = ((clamped - triggerDeadzone) / (1f - triggerDeadzone)).coerceIn(0f, 1f)
-        val curved = normalized.pow(0.66f)
-        return (0.08f + (curved * 0.92f)).coerceIn(0f, 1f)
+        // Daha kontrollu tetik cevabi: kucuk basista az, sona dogru artan hiz.
+        return normalized.pow(1.20f).coerceIn(0f, 1f)
     }
 
     private fun shapeSigned(value: Float, exponent: Float): Float {
@@ -291,31 +312,26 @@ class GamepadMapper {
         return sign * abs(clamped).pow(exponent)
     }
 
+    private fun hasAxis(event: MotionEvent, axis: Int): Boolean {
+        val device = event.device ?: return false
+        return device.getMotionRange(axis, event.source) != null
+    }
+
     private fun acceptMotionDevice(deviceId: Int): Boolean {
-        val active = activeMotionDeviceId
-        return if (active == null || active == deviceId) {
-            activeMotionDeviceId = deviceId
-            true
-        } else {
-            false
-        }
+        activeMotionDeviceId = deviceId
+        return true
     }
 
     private fun acceptKeyDevice(deviceId: Int): Boolean {
-        val active = activeKeyDeviceId
-        return if (active == null || active == deviceId) {
-            activeKeyDeviceId = deviceId
-            true
-        } else {
-            false
-        }
+        activeKeyDeviceId = deviceId
+        return true
     }
 
     private fun expireStaleInputs() {
         val now = System.currentTimeMillis()
         if (lastMotionEventMs > 0L && now - lastMotionEventMs > analogInputTimeoutMs) {
-            leftStickX = 0f
-            rightStickY = 0f
+            leftStickY = 0f
+            rightStickX = 0f
             leftTriggerAxis = 0f
             rightTriggerAxis = 0f
             // Once the analog channel goes silent, drop the "axis active" latch *and* the
@@ -328,8 +344,6 @@ class GamepadMapper {
             lastMotionEventMs = 0L
         }
         if (lastKeyEventMs > 0L && now - lastKeyEventMs > buttonInputTimeoutMs) {
-            l1Pressed = false
-            r1Pressed = false
             l2Pressed = false
             r2Pressed = false
             lastKeyEventMs = 0L

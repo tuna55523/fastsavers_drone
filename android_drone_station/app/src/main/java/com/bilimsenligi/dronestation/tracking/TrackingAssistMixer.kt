@@ -13,7 +13,7 @@ class TrackingAssistMixer {
         val desiredSize: Float = 0.22f,
         val sizeDeadzone: Float = 0.03f,
         val maxFbAssistAbs: Int = 42,
-        val minConfidence: Float = 0.30f,
+        val minConfidence: Float = 0.16f,
         val deadzoneX: Float = 0.04f,
         val deadzoneY: Float = 0.05f,
         /**
@@ -45,8 +45,12 @@ class TrackingAssistMixer {
             return manual
         }
 
-        if (sample.targetId >= 0 && sample.targetId != trackingStatus.targetIndex) {
-            return manual
+        if (sample.targetId >= 0 && trackingStatus.targetIndex > 0) {
+            val matchesZeroBased = sample.targetId == trackingStatus.targetIndex
+            val matchesOneBased = sample.targetId == (trackingStatus.targetIndex + 1)
+            if (!matchesZeroBased && !matchesOneBased) {
+                return manual
+            }
         }
 
         val fadeMs = gains.fadeOutMs.coerceIn(0L, staleTimeoutMs)
