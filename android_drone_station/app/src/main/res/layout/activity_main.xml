@@ -852,6 +852,23 @@
             app:strokeColor="#6B88AD"
             app:strokeWidth="1dp" />
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/fullScreenTrackingToggleButton"
+            style="@style/Widget.Material3.Button"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="68dp"
+            android:layout_marginEnd="12dp"
+            android:elevation="12dp"
+            android:minWidth="132dp"
+            android:text="Takibi Baslat"
+            android:textAllCaps="false"
+            android:textColor="#F8FBFF"
+            android:textSize="13sp"
+            app:backgroundTint="#334155"
+            app:cornerRadius="16dp" />
+
         <com.bilimsenligi.dronestation.ui.VirtualJoystickView
             android:id="@+id/leftVirtualJoystick"
             android:layout_width="170dp"

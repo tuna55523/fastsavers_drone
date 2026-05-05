@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var chargeButton: Button
     private lateinit var takeoffLandButton: Button
     private lateinit var trackingToggleButton: Button
+    private lateinit var fullScreenTrackingToggleButton: Button
     private lateinit var nextTargetButton: Button
     private lateinit var openVideoPanelButton: Button
     private lateinit var closeVideoPanelButton: Button
@@ -112,6 +113,14 @@ class MainActivity : AppCompatActivity(),
     private val reconnectStateTimeoutMs = 8500L
     private val maxReconnectAttempts = 6
     private val trackingSampleStaleMs = 900L
+<<<<<<< HEAD
+    private val touchStrafeMax = 42
+    private val touchForwardBackMax = 62
+    private val touchUpDownRate = 42
+    private val touchYawRate = 28
+    private val rcNeutralDeadband = 3
+    private val rcSlewStep = 8
+=======
     // Son-gun guvenli profil: panel komutlarini daha kontrollu yap.
     private val touchStrafeMax = 28
     private val touchForwardBackMax = 40
@@ -122,6 +131,7 @@ class MainActivity : AppCompatActivity(),
     private val rcSlewFbStep = 7
     private val rcSlewUdStep = 5
     private val rcSlewYawStep = 5
+>>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
 
     @Volatile
     private var isAirborne = false
@@ -152,6 +162,9 @@ class MainActivity : AppCompatActivity(),
 
     @Volatile
     private var touchYaw = 0
+
+    @Volatile
+    private var lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
 
     @Volatile
     private var latestBatteryPercent: Int? = null
@@ -229,6 +242,7 @@ class MainActivity : AppCompatActivity(),
         chargeButton = findViewById(R.id.chargeButton)
         takeoffLandButton = findViewById(R.id.takeoffLandButton)
         trackingToggleButton = findViewById(R.id.trackingToggleButton)
+        fullScreenTrackingToggleButton = findViewById(R.id.fullScreenTrackingToggleButton)
         nextTargetButton = findViewById(R.id.nextTargetButton)
         openVideoPanelButton = findViewById(R.id.openVideoPanelButton)
         closeVideoPanelButton = findViewById(R.id.closeVideoPanelButton)
@@ -287,10 +301,11 @@ class MainActivity : AppCompatActivity(),
         }
 
         trackingToggleButton.setOnClickListener {
-            val enabled = trackingManager.toggle()
-            latestTrackingSample = null
-            postCommandText(if (enabled) "Takip baslatildi" else "Takip durduruldu")
-            updateTrackingUi()
+            toggleTrackingMode()
+        }
+
+        fullScreenTrackingToggleButton.setOnClickListener {
+            toggleTrackingMode()
         }
 
         nextTargetButton.setOnClickListener {
@@ -360,6 +375,7 @@ class MainActivity : AppCompatActivity(),
     override fun onPause() {
         super.onPause()
         gamepadMapper.reset()
+        lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
         resetTouchManual()
         lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
     }
@@ -510,6 +526,7 @@ class MainActivity : AppCompatActivity(),
             telloVideo.stop()
             telloClient.disconnect()
             gamepadMapper.reset()
+            lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
             isAirborne = false
             isVideoRecording = false
             staleStrikeCount = 0
@@ -568,7 +585,16 @@ class MainActivity : AppCompatActivity(),
         val mode = if (st.enabled) "Acik" else "Kapali"
         trackingText.text = "Takip: $mode | Hedef #${st.targetIndex}"
         trackingToggleButton.text = if (st.enabled) "Takibi Durdur (Kare)" else "Takibi Baslat (Yuvarlak)"
+        fullScreenTrackingToggleButton.text = if (st.enabled) "Takibi Durdur" else "Takibi Baslat"
         updateFullscreenHud()
+    }
+
+    private fun toggleTrackingMode() {
+        val enabled = trackingManager.toggle()
+        latestTrackingSample = null
+        lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
+        postCommandText(if (enabled) "Takip baslatildi" else "Takip durduruldu")
+        updateTrackingUi()
     }
 
     private fun updateRecordUi(recording: Boolean) {
@@ -591,17 +617,22 @@ class MainActivity : AppCompatActivity(),
                         nowMs = System.currentTimeMillis(),
                         staleTimeoutMs = trackingSampleStaleMs,
                     )
+                    val rc = stabilizeRcCommand(mixed)
                     if (!isAirborne &&
-                        mixed.leftRight == 0 &&
-                        mixed.forwardBack == 0 &&
-                        mixed.upDown == 0 &&
-                        mixed.yaw == 0
+                        rc.leftRight == 0 &&
+                        rc.forwardBack == 0 &&
+                        rc.upDown == 0 &&
+                        rc.yaw == 0
                     ) {
                         lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
                         return@scheduleAtFixedRate
                     }
+<<<<<<< HEAD
+                    telloClient.sendRcControl(rc.leftRight, rc.forwardBack, rc.upDown, rc.yaw)
+=======
                     val smooth = applyRcSlew(mixed)
                     telloClient.sendRcControl(smooth.leftRight, smooth.forwardBack, smooth.upDown, smooth.yaw)
+>>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
                 } catch (_: Exception) {
                 }
             },
@@ -1080,6 +1111,31 @@ class MainActivity : AppCompatActivity(),
         )
     }
 
+<<<<<<< HEAD
+    private fun stabilizeRcCommand(command: GamepadMapper.RcCommand): GamepadMapper.RcCommand {
+        fun deadband(value: Int): Int = if (kotlin.math.abs(value) <= rcNeutralDeadband) 0 else value
+        fun slew(previous: Int, target: Int): Int {
+            val delta = (target - previous).coerceIn(-rcSlewStep, rcSlewStep)
+            val next = previous + delta
+            return if (target == 0 && kotlin.math.abs(next) <= rcSlewStep) 0 else next
+        }
+
+        val target = GamepadMapper.RcCommand(
+            leftRight = deadband(command.leftRight),
+            forwardBack = deadband(command.forwardBack),
+            upDown = deadband(command.upDown),
+            yaw = deadband(command.yaw),
+        )
+
+        val smoothed = GamepadMapper.RcCommand(
+            leftRight = slew(lastRcCommand.leftRight, target.leftRight),
+            forwardBack = slew(lastRcCommand.forwardBack, target.forwardBack),
+            upDown = slew(lastRcCommand.upDown, target.upDown),
+            yaw = slew(lastRcCommand.yaw, target.yaw),
+        )
+        lastRcCommand = smoothed
+        return smoothed
+=======
     private fun applyRcSlew(target: GamepadMapper.RcCommand): GamepadMapper.RcCommand {
         val prev = lastSentRc
         val next = GamepadMapper.RcCommand(
@@ -1099,6 +1155,7 @@ class MainActivity : AppCompatActivity(),
             target < previous - safeStep -> previous - safeStep
             else -> target
         }.coerceIn(-100, 100)
+>>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
     }
 
     private fun resetTouchManual() {
@@ -1228,6 +1285,7 @@ class MainActivity : AppCompatActivity(),
 
         fullScreenPanel.post {
             closeVideoPanelButton.bringToFront()
+            fullScreenTrackingToggleButton.bringToFront()
             leftVirtualJoystick.bringToFront()
             fullScreenAxisPad.bringToFront()
 
@@ -1236,6 +1294,7 @@ class MainActivity : AppCompatActivity(),
                     expandedRectInParent(leftVirtualJoystick, fullScreenPanel, 24),
                     expandedRectInParent(fullScreenAxisPad, fullScreenPanel, 24),
                     expandedRectInParent(closeVideoPanelButton, fullScreenPanel, 12),
+                    expandedRectInParent(fullScreenTrackingToggleButton, fullScreenPanel, 12),
                 )
             }
         }
