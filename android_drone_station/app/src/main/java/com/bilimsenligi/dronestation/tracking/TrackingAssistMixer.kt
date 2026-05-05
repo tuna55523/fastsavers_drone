@@ -7,15 +7,15 @@ import kotlin.math.sign
 class TrackingAssistMixer {
 
     data class Gains(
-        val yawKp: Float = 38f,
-        val udKp: Float = 28f,
-        val fbKp: Float = 26f,
+        val yawKp: Float = 18f,
+        val udKp: Float = 10f,
+        val fbKp: Float = 12f,
         val desiredSize: Float = 0.22f,
-        val sizeDeadzone: Float = 0.03f,
-        val maxFbAssistAbs: Int = 42,
-        val minConfidence: Float = 0.30f,
-        val deadzoneX: Float = 0.04f,
-        val deadzoneY: Float = 0.05f,
+        val sizeDeadzone: Float = 0.08f,
+        val maxFbAssistAbs: Int = 18,
+        val minConfidence: Float = 0.50f,
+        val deadzoneX: Float = 0.12f,
+        val deadzoneY: Float = 0.16f,
         /**
          * Tracking sample akisi kesildiginde komutlarin ne kadar hizli sifira sonecegini belirler.
          * Ornek: staleTimeoutMs=900 ise, 300ms'de yaklasik sifira iner.
