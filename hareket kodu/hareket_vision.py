@@ -1,10 +1,11 @@
-# pyright: reportGeneralTypeIssues=false
+﻿# pyright: reportGeneralTypeIssues=false
 # pylint: disable=no-member
 import os
 import sys
 import time
 import threading
 import importlib
+import argparse
 from typing import Any, Callable
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +23,13 @@ try:
 except Exception as vision_import_exc:
     DetectTrackSystem = None  # type: ignore[assignment]
     _VISION_IMPORT_ERROR = vision_import_exc
+
+
+def parse_runtime_args():
+    parser = argparse.ArgumentParser(description="Tello paneli veya video test modu")
+    parser.add_argument("--video", type=str, default="", help="Drone yerine oynatilacak video dosyasi")
+    parser.add_argument("--loop-video", action="store_true", help="Video bitince basa sar")
+    return parser.parse_args()
 
 # =========================================================
 # AYARLAR
@@ -73,6 +81,7 @@ MANUAL_TAKEOFF_HOVER_CM = 28
 MANUAL_TAKEOFF_TOL_CM = 7
 MANUAL_TAKEOFF_MAX_DESCEND_CM = 70
 AUTO_MIN_BATTERY = 25
+<<<<<<< HEAD
 BATTERY_POLL_SEC = 5.0
 MANUAL_SPEED_LIMIT_CM_S = 55
 
@@ -99,12 +108,26 @@ POWER_SAVE_BAT_CRIT = 17
 POWER_SAVE_SCALE_MID = 0.92
 POWER_SAVE_SCALE_LOW = 0.84
 POWER_SAVE_SCALE_CRIT = 0.74
+=======
+BATTERY_POLL_SEC = 1.5
+BATTERY_OPT_ENABLE = True
+ECO_BATTERY_LOW = 35
+ECO_BATTERY_CRIT = 25
+ECO_SPEED_SCALE_LOW = 0.78
+ECO_SPEED_SCALE_CRIT = 0.62
+>>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
 
 # =========================================================
 # GORUNTU ISLEME
 # =========================================================
 VISION_AUTO_ENABLE = True
+<<<<<<< HEAD
 VISION_UPDATE_INTERVAL_SEC = 0.40
+=======
+VISION_UPDATE_INTERVAL_SEC = 0.12
+VISION_UPDATE_INTERVAL_LOW = 0.20
+VISION_UPDATE_INTERVAL_CRIT = 0.28
+>>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
 VISION_RESULT_TTL_SEC = 1.2
 VISION_TRACK_LOST_SEC = 5.0
 VISION_MIN_TRACK_BOX_W = 28
@@ -142,6 +165,17 @@ MIN_CMD_YAW   = 10
 MIN_CMD_UD    = 10
 MAX_YAW       = 55
 MAX_UD        = 55
+COMBO_FLIP_STEP_DELAY_SEC = 0.35
+COMBO_FLIP_COOLDOWN_SEC = 4.0
+SHOW_SEGMENT_TICK_SEC = 0.05
+SHOW_SQUARE_FB_SPEED = 46
+SHOW_SQUARE_YAW_SPEED = 42
+SHOW_SQUARE_EDGE_SEC = 1.15
+SHOW_SQUARE_TURN_SEC = 1.05
+SHOW_EIGHT_FB_SPEED = 42
+SHOW_EIGHT_YAW_SPEED = 40
+SHOW_EIGHT_LOOP_SEC = 1.85
+MEVLANA_YAW_SPEED = 58
 
 # =========================================================
 # İLERİ/GERİ (FB) - MESAFE KORUMA
@@ -331,6 +365,32 @@ def format_battery_text(value):
     except Exception:
         return "N/A"
     return f"{battery}%" if battery >= 0 else "N/A"
+
+
+def get_battery_eco_profile(battery_value):
+    if not BATTERY_OPT_ENABLE:
+        return ("OFF", 1.0, VISION_UPDATE_INTERVAL_SEC)
+    try:
+        battery_int = int(battery_value)
+    except Exception:
+        return ("N/A", 1.0, VISION_UPDATE_INTERVAL_SEC)
+    if battery_int < 0:
+        return ("N/A", 1.0, VISION_UPDATE_INTERVAL_SEC)
+    if battery_int <= ECO_BATTERY_CRIT:
+        return ("CRIT", ECO_SPEED_SCALE_CRIT, VISION_UPDATE_INTERVAL_CRIT)
+    if battery_int <= ECO_BATTERY_LOW:
+        return ("LOW", ECO_SPEED_SCALE_LOW, VISION_UPDATE_INTERVAL_LOW)
+    return ("NORMAL", 1.0, VISION_UPDATE_INTERVAL_SEC)
+
+
+def get_runtime_speed_scale():
+    _, scale, _ = get_battery_eco_profile(battery_level)
+    return float(scale)
+
+
+def get_runtime_vision_interval():
+    _, _, interval = get_battery_eco_profile(battery_level)
+    return float(interval)
 
 
 def clamp_bbox_to_frame(bbox, fw, fh):
@@ -811,6 +871,13 @@ def fuse_score(hist_corr, edge_corr, tm_score):
 # =========================================================
 tello = None
 tello_connected = False
+video_mode = False
+video_path = ""
+video_loop = False
+video_cap = None
+video_frame_is_rgb = False
+sim_is_flying = False
+sim_battery = 100
 
 
 def toast(msg, sec=1.5):
@@ -843,6 +910,8 @@ def save_photo(frame_bgr):
 
 
 def safe_is_flying():
+    if video_mode:
+        return bool(sim_is_flying)
     tello_ref = tello
     if tello_ref is None:
         return False
@@ -851,6 +920,8 @@ def safe_is_flying():
 
 
 def safe_get_height_cm(default=0.0):
+    if video_mode:
+        return float(MANUAL_TAKEOFF_HOVER_CM if sim_is_flying else 0.0)
     tello_ref = tello
     if tello_ref is None:
         return float(default)
@@ -859,6 +930,8 @@ def safe_get_height_cm(default=0.0):
 
 
 def safe_get_battery(default=-1):
+    if video_mode:
+        return int(sim_battery)
     tello_ref = tello
     if tello_ref is None:
         return int(default)
@@ -914,6 +987,9 @@ def run_sdk_command(fn):
 
 def connect_tello():
     global tello, tello_connected
+    if video_mode:
+        tello_connected = True
+        return True
     if tello is None:
         tello = Tello()
     if tello_connected:
@@ -924,6 +1000,10 @@ def connect_tello():
 
 
 def send_rc_control_safe(lr=0, fb=0, ud=0, yv=0, *, reason="rc", report_fail=True, report_success=False):
+    if video_mode:
+        if report_success:
+            note_link_ok()
+        return True
     tello_ref = tello
     if tello_ref is None:
         if report_fail:
@@ -942,6 +1022,10 @@ def send_rc_control_safe(lr=0, fb=0, ud=0, yv=0, *, reason="rc", report_fail=Tru
 
 
 def fast_takeoff(wait_sec=TAKEOFF_WAIT_SEC, min_height_cm=TAKEOFF_READY_HEIGHT_CM):
+    global sim_is_flying
+    if video_mode:
+        sim_is_flying = True
+        return True
     stop_and_hover()
     try:
         run_sdk_command(lambda: tello.send_command_without_return("takeoff"))
@@ -1103,6 +1187,8 @@ def stabilize_after_flip(reference_height_cm):
 
 
 def force_sdk_speed_max():
+    if video_mode:
+        return True
     if (
         globals().get("auto_running", False)
         or globals().get("takeoff_busy", False)
@@ -1168,6 +1254,11 @@ toast_until  = 0.0
 auto_running    = False
 auto_cancel     = False
 auto_step_label = ""   # Hangi adımda olduğunu gösterir
+show_running    = False
+show_cancel     = False
+show_mode       = ""
+show_step_label = ""
+mevlana_mode    = False
 
 fps_smooth = 0.0
 FPS_ALPHA  = 0.08
@@ -1243,7 +1334,7 @@ def note_link_fail(reason=""):
 def rc_sender_loop():
     while rc_running:
         # Otonom veya acil durumda sadece bekle, rc degerlerine dokunma
-        if emergency or auto_running or mode != 0 or takeoff_busy:
+        if emergency or auto_running or show_running or mode != 0 or takeoff_busy:
             time.sleep(RC_DT)
             continue
         # Manuel mod: ana dongunun yazdigi degerleri gonder
@@ -1262,12 +1353,19 @@ def rc_sender_loop():
 
 
 def recover_stream(reason=""):
-    global frame_read, last_watchdog_reset_t, last_frame_sig, last_frame_change_t
+    global frame_read, last_watchdog_reset_t, last_frame_sig, last_frame_change_t, video_cap
     now = time.time()
     if now - last_watchdog_reset_t < WATCHDOG_RESET_COOLDOWN: return False
     last_watchdog_reset_t = now
     toast(f"STREAM RESET ({reason})", 1.0)
     stop_and_hover()
+    if video_mode:
+        try:
+            if video_cap is not None:
+                video_cap.release()
+        except Exception:
+            pass
+        return init_stream()
     try: run_sdk_command(tello.streamoff); time.sleep(0.2)
     except: pass
     try:
@@ -1280,7 +1378,21 @@ def recover_stream(reason=""):
 
 
 def init_stream():
-    global frame_read, last_frame_sig, last_frame_change_t
+    global frame_read, last_frame_sig, last_frame_change_t, video_cap
+    if video_mode:
+        try:
+            if video_cap is not None:
+                video_cap.release()
+        except Exception:
+            pass
+        video_cap = cv2.VideoCapture(video_path)
+        if not video_cap.isOpened():
+            return False
+        frame_read = None
+        last_frame_sig = None
+        last_frame_change_t = time.time()
+        note_link_ok()
+        return True
     try:
         try: run_sdk_command(tello.streamoff)
         except: pass
@@ -1423,7 +1535,7 @@ def _vision_worker_loop():
             continue
 
         now = time.time()
-        if now - vision_last_run_t < VISION_UPDATE_INTERVAL_SEC:
+        if now - vision_last_run_t < get_runtime_vision_interval():
             time.sleep(0.01)
             continue
 
@@ -1523,10 +1635,13 @@ def draw_vision_overlay(frame_bgr, now_ts):
         is_target = person.get("id") == target_id
         is_danger = bool(person.get("is_danger", False))
         status_label = str(person.get("status_label", "SAFE")).upper()
+        activity_label = str(person.get("activity_label", "NOT SWIMMING")).upper()
 
         color = (0, 255, 0)
         if is_danger:
             color = (0, 0, 255)
+        elif status_label == "WATCH":
+            color = (0, 165, 255)
 
         box_thickness = 3 if is_target else 1
         cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, box_thickness)
@@ -1536,7 +1651,7 @@ def draw_vision_overlay(frame_bgr, now_ts):
             except Exception:
                 pass
 
-        label = status_label
+        label = f"{status_label} | {activity_label}"
         cv2.putText(
             frame_bgr,
             label,
@@ -1553,12 +1668,24 @@ def do_flip(direction):
     now = time.time()
     if now - last_flip_t < FLIP_COOLDOWN_SEC:
         return
+    if video_mode:
+        last_flip_t = now
+        names = {'l': 'SOL', 'r': 'SAG', 'f': 'ILERI', 'b': 'GERI'}
+        toast(f"SIM TAKLA: {names.get(direction, direction)}")
+        return
     if not safe_is_flying(): toast("Takla icin once havalanin!"); return
+<<<<<<< HEAD
     bat_now = battery_level if battery_level >= 0 else safe_get_battery(-1)
     if bat_now != -1 and bat_now < FLIP_MIN_BATTERY:
         toast(f"Takla iptal: pil dusuk ({bat_now}%)")
         return
     pre_flip_height = safe_get_height_cm(MANUAL_TAKEOFF_HOVER_CM)
+=======
+    battery_now = safe_get_battery(-1)
+    if battery_now != -1 and battery_now < AUTO_MIN_BATTERY:
+        toast(f"Takla iptal: Batarya dusuk ({battery_now}%)")
+        return
+>>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
     last_flip_t = now
     try:
         stop_and_hover()
@@ -1570,6 +1697,139 @@ def do_flip(direction):
     except Exception as e:
         last_flip_t = 0.0
         toast(f"Takla hata: {e}")
+
+
+def do_double_flip(direction='f'):
+    global last_flip_t
+    now = time.time()
+    if now - last_flip_t < max(FLIP_COOLDOWN_SEC, COMBO_FLIP_COOLDOWN_SEC):
+        return
+    if video_mode:
+        last_flip_t = now
+        toast("SIM KOMBO TAKLA 1/4 ILERI", 0.7)
+        return
+    if not safe_is_flying():
+        toast("Double takla icin once havalanin!")
+        return
+    battery_now = safe_get_battery(-1)
+    if battery_now != -1 and battery_now < AUTO_MIN_BATTERY:
+        toast(f"Double takla iptal: Batarya dusuk ({battery_now}%)")
+        return
+
+    last_flip_t = now
+    names = {'l': 'SOL', 'r': 'SAG', 'f': 'ILERI', 'b': 'GERI'}
+    combo = ['f', 'l', 'b', 'r']  # ileri -> sol -> geri -> sag
+    try:
+        for idx, step_dir in enumerate(combo, start=1):
+            if not safe_is_flying():
+                toast("Double takla iptal: ucus durumu degisti")
+                return
+            battery_now = safe_get_battery(-1)
+            if battery_now != -1 and battery_now < AUTO_MIN_BATTERY:
+                toast(f"Double takla iptal: Batarya dusuk ({battery_now}%)")
+                return
+            stop_and_hover()
+            time.sleep(0.15)
+            run_sdk_command(lambda d=step_dir: tello.flip(d))
+            toast(f"KOMBO TAKLA {idx}/4: {names.get(step_dir, step_dir)}", 0.75)
+            if idx < len(combo):
+                time.sleep(COMBO_FLIP_STEP_DELAY_SEC)
+    except Exception as e:
+        last_flip_t = 0.0
+        toast(f"Double takla hata: {e}")
+
+
+def _run_show_segment(*, lr=0, fb=0, ud=0, yv=0, duration_sec=0.5, label=""):
+    global show_step_label
+    show_step_label = label
+    started = time.time()
+    while (time.time() - started) < duration_sec:
+        if show_cancel or emergency or auto_cancel:
+            send_rc_control_safe(0, 0, 0, 0, reason="show_abort", report_fail=False, report_success=False)
+            return False
+        send_rc_control_safe(int(lr), int(fb), int(ud), int(yv), reason="show_rc", report_fail=False, report_success=False)
+        time.sleep(SHOW_SEGMENT_TICK_SEC)
+    send_rc_control_safe(0, 0, 0, 0, reason="show_hover", report_fail=False, report_success=False)
+    time.sleep(0.12)
+    return True
+
+
+def _show_worker(kind):
+    global show_running, show_cancel, show_mode, show_step_label, mode
+    try:
+        mode = 0
+        reset_tracking()
+        scale = get_runtime_speed_scale()
+        sq_fb = max(24, int(SHOW_SQUARE_FB_SPEED * scale))
+        sq_yaw = max(20, int(SHOW_SQUARE_YAW_SPEED * scale))
+        eight_fb = max(22, int(SHOW_EIGHT_FB_SPEED * scale))
+        eight_yaw = max(20, int(SHOW_EIGHT_YAW_SPEED * scale))
+
+        if kind == "square":
+            toast("GOSTERI: Kare basladi", 1.2)
+            for i in range(1, 5):
+                if not _run_show_segment(fb=sq_fb, duration_sec=SHOW_SQUARE_EDGE_SEC, label=f"Kare kenar {i}/4"):
+                    return
+                if not _run_show_segment(yv=sq_yaw, duration_sec=SHOW_SQUARE_TURN_SEC, label=f"Kare donus {i}/4"):
+                    return
+            toast("GOSTERI: Kare tamamlandi", 1.0)
+        elif kind == "eight":
+            toast("GOSTERI: 8 basladi", 1.2)
+            if not _run_show_segment(fb=eight_fb, yv=+eight_yaw, duration_sec=SHOW_EIGHT_LOOP_SEC, label="8 halka 1/2"):
+                return
+            if not _run_show_segment(fb=eight_fb, yv=-eight_yaw, duration_sec=SHOW_EIGHT_LOOP_SEC, label="8 halka 2/2"):
+                return
+            toast("GOSTERI: 8 tamamlandi", 1.0)
+    finally:
+        send_rc_control_safe(0, 0, 0, 0, reason="show_end", report_fail=False, report_success=False)
+        show_running = False
+        show_cancel = False
+        show_mode = ""
+        show_step_label = ""
+
+
+def start_show_mode(kind):
+    global show_running, show_cancel, show_mode, mevlana_mode, mode
+    if show_running:
+        toast("GOSTERI zaten calisiyor")
+        return
+    if auto_running or takeoff_busy or emergency:
+        toast("GOSTERI icin once otonomu/acil modu kapat")
+        return
+    if not safe_is_flying():
+        toast("GOSTERI icin drone havada olmali")
+        return
+    battery_now = safe_get_battery(-1)
+    if battery_now != -1 and battery_now < AUTO_MIN_BATTERY:
+        toast(f"GOSTERI iptal: Batarya dusuk ({battery_now}%)")
+        return
+    mode = 0
+    mevlana_mode = False
+    show_cancel = False
+    show_running = True
+    show_mode = kind
+    stop_and_hover()
+    threading.Thread(target=_show_worker, args=(kind,), daemon=True).start()
+
+
+def toggle_mevlana_mode():
+    global mevlana_mode, show_running, show_cancel, show_mode
+    if auto_running or emergency:
+        toast("Mevlana modu su an acilamaz")
+        return
+    if not safe_is_flying():
+        toast("Mevlana modu icin once havalanin")
+        return
+    if show_running:
+        show_cancel = True
+        show_running = False
+        show_mode = ""
+    mevlana_mode = not mevlana_mode
+    if mevlana_mode:
+        toast("MEVLANA: ACIK", 1.0)
+    else:
+        stop_and_hover()
+        toast("MEVLANA: KAPALI", 1.0)
 
 
 # =========================================================
@@ -1970,6 +2230,17 @@ def autonomous_worker():
 # BAŞLAT
 # =========================================================
 if __name__ == "__main__":
+    runtime_args = parse_runtime_args()
+    if runtime_args.video:
+        candidate_video_path = runtime_args.video.strip()
+        if not os.path.isabs(candidate_video_path):
+            candidate_video_path = os.path.abspath(os.path.join(PROJECT_ROOT, candidate_video_path))
+        video_mode = True
+        video_path = candidate_video_path
+        video_loop = bool(runtime_args.loop_video)
+        print(f"[VIDEO TEST] Kaynak: {video_path}")
+        print(f"[VIDEO TEST] Loop: {'ACIK' if video_loop else 'KAPALI'}")
+
     try:
         connect_tello()
     except Exception as exc:
@@ -2002,7 +2273,10 @@ if __name__ == "__main__":
     last_speed_force_t = 0.0
     SPEED_FORCE_EVERY  = 10.0
 
-    toast("Hazir | F foto | P vision | G takip | TAB panel | V kalkis | R otonom", 3.0)
+    if video_mode:
+        toast("VIDEO TEST | P vision | G takip | TAB panel | --video modu", 3.0)
+    else:
+        toast("Hazir | F foto | P vision | G takip | TAB panel | V kalkis | R otonom", 3.0)
 
     man_lr = man_fb = man_ud = man_yv = 0
     
@@ -2015,12 +2289,24 @@ if __name__ == "__main__":
                 last_speed_force_t = now
                 force_sdk_speed_max()
 
-            raw = frame_read.frame if frame_read is not None else None
+            if video_mode:
+                raw = None
+                if video_cap is not None:
+                    ok_frame, raw = video_cap.read()
+                    if not ok_frame:
+                        if video_loop:
+                            video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            ok_frame, raw = video_cap.read()
+                        if not ok_frame:
+                            raw = None
+            else:
+                raw = frame_read.frame if frame_read is not None else None
             if raw is None:
                 ok_rec = recover_stream("frame none")
                 if not ok_rec: note_link_fail("frame_none")
                 dummy = np.zeros((DISPLAY_H, DISPLAY_W, 3), dtype=np.uint8)
-                cv2.putText(dummy, "FRAME YOK...", (35, 70),
+                frame_msg = "VIDEO BITTI / FRAME YOK..." if video_mode else "FRAME YOK..."
+                cv2.putText(dummy, frame_msg, (35, 70),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
                 cv2.imshow("TELLO UI", dummy)
                 cv2.waitKey(1); time.sleep(0.03)
@@ -2035,7 +2321,10 @@ if __name__ == "__main__":
                     if not ok_rec: note_link_fail("stale")
                     last_frame_change_t = now
     
-            frame_disp = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
+            if video_mode or not video_frame_is_rgb:
+                frame_disp = raw.copy()
+            else:
+                frame_disp = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
             frame_disp = cv2.resize(frame_disp, (DISPLAY_W, DISPLAY_H))
             # Vision frame'i thread'e gonder (BLOKLAMAZ)
             update_vision_cache_threaded(frame_disp.copy(), now)
@@ -2055,9 +2344,15 @@ if __name__ == "__main__":
     
             photo_requested = 'f' in pressed_once
     
+<<<<<<< HEAD
             # Otonom çalışırken sadece iptal/acil tuşları
             if auto_running:
                 pressed_once = [k for k in pressed_once if k in ('space', 'm', 'tab') or k in CANCEL_KEYS]
+=======
+            # Otonom/gosteri çalışırken sadece iptal/acil tuşları
+            if auto_running or show_running:
+                pressed_once = [k for k in pressed_once if k in ('space','o','ö','m','tab')]
+>>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
     
             # --- Tuş işleme ---
             if auto_running and photo_requested and 'f' not in pressed_once:
@@ -2072,6 +2367,14 @@ if __name__ == "__main__":
                 elif k == 'k' and not auto_running: do_flip('b')
                 elif k == 'j' and not auto_running: do_flip('l')
                 elif k == 'l' and not auto_running: do_flip('r')
+                elif k == 'u' and not auto_running:
+                    threading.Thread(target=do_double_flip, args=('f',), daemon=True).start()
+                elif k == '8' and not auto_running:
+                    start_show_mode("eight")
+                elif k == '9' and not auto_running:
+                    start_show_mode("square")
+                elif k == '7' and not auto_running:
+                    toggle_mevlana_mode()
     
                 elif k == 'v' and not auto_running:
                     start_manual_takeoff()
@@ -2080,8 +2383,12 @@ if __name__ == "__main__":
                     save_photo(frame_disp.copy())
     
                 elif k == 'n' and not auto_running:
-                    try: run_sdk_command(tello.land); toast("INIS")
-                    except Exception as e: toast(f"Inis hata: {e}")
+                    if video_mode:
+                        sim_is_flying = False
+                        toast("SIM INIS")
+                    else:
+                        try: run_sdk_command(tello.land); toast("INIS")
+                        except Exception as e: toast(f"Inis hata: {e}")
     
                 elif k == 'h' and not auto_running:
                     stop_and_hover()
@@ -2234,14 +2541,18 @@ if __name__ == "__main__":
     
                 elif k in CANCEL_KEYS:
                     auto_cancel = True
+                    show_cancel = True
+                    mevlana_mode = False
                     roi_pending = False; roi_pending_bbox = None; roi_pending_frame = None
                     stop_and_hover()
                     with rc_lock: rc_lr = rc_fb = rc_ud = rc_yv = 0
                     pressed.clear(); key_events.clear()
-                    toast("OTONOM: IPTAL")
+                    toast("OTONOM/GOSTERI: IPTAL")
     
                 elif k == 'space':
                     emergency = True; auto_cancel = True
+                    show_cancel = True
+                    mevlana_mode = False
                     roi_pending = False; roi_pending_bbox = None; roi_pending_frame = None
                     reset_tracking(); stop_and_hover()
                     with rc_lock: rc_lr = rc_fb = rc_ud = rc_yv = 0
@@ -2343,10 +2654,11 @@ if __name__ == "__main__":
                         cv2.rectangle(frame_disp, (x1, y1), (x2, y2), box_color, 3)
                         cv2.circle(frame_disp, (cx, cy), 5, box_color, -1)
                         status_lbl = str(tracked_person.get("status_label", "SAFE"))
+                        activity_lbl = str(tracked_person.get("activity_label", "NOT SWIMMING"))
                         risk_val = float(tracked_person.get("risk", 0.0))
                         tid = tracked_person.get("id", "?")
                         cv2.putText(frame_disp,
-                                    f"TAKIP ID:{tid} {status_lbl} R:{risk_val:.2f}",
+                                    f"TAKIP ID:{tid} {status_lbl} | {activity_lbl} R:{risk_val:.2f}",
                                     (x1, max(22, y1 - 12)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.56, box_color, 2, cv2.LINE_AA)
 
@@ -2436,6 +2748,7 @@ if __name__ == "__main__":
                     mode = 0; reset_tracking()
     
             # --- MANUEL ---
+<<<<<<< HEAD
             elif mode == 0 and not emergency and not auto_running:
                 axis_speed = manual_axis_speed_from_battery(battery_level)
                 if key_down('w'): fb =  axis_speed
@@ -2451,9 +2764,31 @@ if __name__ == "__main__":
                 hover_ud = compute_manual_hover_ud(now, manual_input_active)
                 if (not manual_input_active) and hover_ud != 0:
                     ud = int(hover_ud)
+=======
+            elif mode == 0 and not emergency and not auto_running and not show_running:
+                manual_speed = max(24, int(MAX_SPEED * get_runtime_speed_scale()))
+                if key_down('w'): fb =  manual_speed
+                if key_down('s'): fb = -manual_speed
+                if key_down('a'): lr = -manual_speed
+                if key_down('d'): lr =  manual_speed
+                if key_down('q'): yv = -manual_speed
+                if key_down('e'): yv =  manual_speed
+                if key_down('z'): ud =  manual_speed
+                if key_down('x'): ud = -manual_speed
+                if mevlana_mode and not show_running:
+                    yv = max(24, int(MEVLANA_YAW_SPEED * get_runtime_speed_scale()))
+
+            if not emergency and not auto_running and not show_running:
+                speed_scale = get_runtime_speed_scale()
+                if speed_scale < 0.999:
+                    lr = int(lr * speed_scale)
+                    fb = int(fb * speed_scale)
+                    ud = int(ud * speed_scale)
+                    yv = int(yv * speed_scale)
+>>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
     
             # --- RC GONDER ---
-            if emergency or auto_running:
+            if emergency or auto_running or show_running:
                 with rc_lock: rc_lr = rc_fb = rc_ud = rc_yv = 0
             elif mode == 1:
                 send_rc_control_safe(int(lr), int(fb), int(ud), int(yv), reason="track_rc")
@@ -2484,18 +2819,20 @@ if __name__ == "__main__":
             draw_cinematic_overlay(frame_disp)
             draw_vision_overlay(frame_disp, now)
     
-            state_txt = "ACIL" if emergency else ("KALKIS" if takeoff_busy else ("OTONOM" if auto_running else "NORMAL"))
-            mode_txt  = "OTONOM" if auto_running else ("VISION TAKIP" if mode==1 and vision_track_active else ("TAKIP" if mode==1 else "MANUEL"))
+            state_txt = "ACIL" if emergency else ("KALKIS" if takeoff_busy else ("OTONOM" if auto_running else ("GOSTERI" if show_running else "NORMAL")))
+            mode_txt  = "OTONOM" if auto_running else ("GOSTERI" if show_running else ("MEVLANA" if mevlana_mode else ("VISION TAKIP" if mode==1 and vision_track_active else ("TAKIP" if mode==1 else "MANUEL"))))
             lock_txt  = f"HEDEF:ID{vision_track_target_id}" if vision_track_active else ("KILIT:ON" if lock_enabled else "KILIT:OFF")
             fb_txt    = "FB:ON"    if fb_active     else "FB:OFF"
             battery_txt = format_battery_text(bat)
+            eco_label, _, eco_vision_int = get_battery_eco_profile(bat)
             stream_alive = (now - last_frame_change_t) <= (WATCHDOG_STALE_SEC + 0.15)
             video_status_txt = "VIDEO LIVE" if stream_alive else "VIDEO WAIT"
             video_status_fg = (174, 242, 255) if stream_alive else (255, 220, 140)
             if vision_enabled:
                 if vision_last_target is not None:
                     target_status = str(vision_last_target.get("status_label", "SAFE")).upper()
-                    vision_state_txt = f"VISION:{target_status} K:{len(vision_last_persons)} O:{len(vision_last_objects)}"
+                    target_activity = str(vision_last_target.get("activity_label", "NOT SWIMMING")).upper()
+                    vision_state_txt = f"VISION:{target_status} {target_activity} K:{len(vision_last_persons)} O:{len(vision_last_objects)}"
                     vision_bg = (0, 0, 255) if bool(vision_last_target.get("is_danger", False)) else (18, 52, 24)
                 else:
                     vision_state_txt = f"VISION:ON K:{len(vision_last_persons)} O:{len(vision_last_objects)}"
@@ -2509,12 +2846,13 @@ if __name__ == "__main__":
             draw_reticle_modern(frame_disp, ww//2, hh//2, accent=accent_color)
             if vision_enabled and vision_last_target is not None:
                 reticle_status = str(vision_last_target.get("status_label", "SAFE")).upper()
+                reticle_activity = str(vision_last_target.get("activity_label", "NOT SWIMMING")).upper()
                 reticle_danger = bool(vision_last_target.get("is_danger", False))
                 reticle_bg = (0, 0, 180) if reticle_danger else (18, 92, 42)
                 reticle_fg = (255, 246, 246) if reticle_danger else (222, 255, 232)
                 draw_center_badge(
                     frame_disp,
-                    reticle_status,
+                    f"{reticle_status} | {reticle_activity}",
                     ww // 2,
                     hh // 2 + 64,
                     bg=reticle_bg,
@@ -2528,9 +2866,10 @@ if __name__ == "__main__":
                        scale=0.62)
             draw_badge(frame_disp, f"MOD:{mode_txt}", 20, 70, bg=(20, 27, 34))
             draw_badge(frame_disp, f"BAT:{battery_txt}", 20, 105, bg=(20, 27, 34))
+            draw_badge(frame_disp, f"ECO:{eco_label} V:{eco_vision_int:.2f}s", 20, 140, bg=(20, 27, 34))
             if mode == 1 or lock_enabled or fb_active:
-                draw_badge(frame_disp, f"{lock_txt} {fb_txt}", 20, 140, bg=(20, 27, 34))
-            draw_badge(frame_disp, vision_state_txt, 20, 140 if not (mode == 1 or lock_enabled or fb_active) else 175, bg=vision_bg)
+                draw_badge(frame_disp, f"{lock_txt} {fb_txt}", 20, 175, bg=(20, 27, 34))
+            draw_badge(frame_disp, vision_state_txt, 20, 175 if not (mode == 1 or lock_enabled or fb_active) else 210, bg=vision_bg)
             draw_badge(frame_disp, f"FPS:{fps_smooth:4.1f}", ww-185, 35, bg=(20, 27, 34))
             draw_badge(frame_disp, video_status_txt, ww-205, 70, bg=(20, 27, 34), fg=video_status_fg)
     
@@ -2538,6 +2877,9 @@ if __name__ == "__main__":
             if auto_running and auto_step_label:
                 draw_badge(frame_disp, f"ADIM: {auto_step_label}",
                            ww//2-145, 35, bg=(0,214,255), fg=(8,14,18), scale=0.60)
+            elif show_running and show_step_label:
+                draw_badge(frame_disp, f"GOSTERI: {show_step_label}",
+                           ww//2-175, 35, bg=(0,214,255), fg=(8,14,18), scale=0.56)
     
             if roi_pending:
                 draw_badge(frame_disp, "ROI ONAY BEKL. -> ENTER",
@@ -2591,7 +2933,7 @@ if __name__ == "__main__":
 
             if vision_enabled and vision_last_target is not None:
                 obj_summary = summarize_aux_objects(vision_last_objects)
-                vision_info = f"TGT:{vision_last_target.get('id', '?')} {vision_last_target.get('status_label', 'SAFE')} | OBJ:{obj_summary}"
+                vision_info = f"TGT:{vision_last_target.get('id', '?')} {vision_last_target.get('status_label', 'SAFE')} {vision_last_target.get('activity_label', 'NOT SWIMMING')} | OBJ:{obj_summary}"
             elif vision_enabled:
                 obj_summary = summarize_aux_objects(vision_last_objects)
                 vision_info = f"VISION | K:{len(vision_last_persons)} O:{len(vision_last_objects)} | {vision_last_infer_ms:.0f}ms"
@@ -2603,8 +2945,9 @@ if __name__ == "__main__":
             ui_lines = [
                 "KONTROLLER:",
                 "V kalkis | N inis | H hover",
-                "F foto | B hedef degistir",
+                "F foto | U kombo takla | B hedef degistir",
                 "WASD QE ZX manuel",
+                "7 mevlana | 8 sekiz | 9 kare",
                 "G insan takip | ENTER takip",
                 "Y mesafe koruma",
                 "R otonom | O/O iptal",
@@ -2613,6 +2956,7 @@ if __name__ == "__main__":
                 "",
                 "STATUS:",
                 f"MODE {mode_txt} | BAT {battery_txt}",
+                f"ECO {eco_label} | VINT {eco_vision_int:.2f}s",
                 vision_info,
                 f"KISI:{len(vision_last_persons)} | FWD:{AUTO_FWD_SPEED} YAW:{AUTO_YAW_SPEED}",
             ]
@@ -2637,9 +2981,14 @@ if __name__ == "__main__":
         try: auto_cancel = True; stop_and_hover()
         except: pass
         try:
-            if safe_is_flying(): run_sdk_command(tello.land)
+            if safe_is_flying() and not video_mode: run_sdk_command(tello.land)
         except: pass
-        try: run_sdk_command(tello.streamoff)
-        except: pass
+        try:
+            if video_mode and video_cap is not None:
+                video_cap.release()
+            elif not video_mode:
+                run_sdk_command(tello.streamoff)
+        except:
+            pass
         cv2.destroyAllWindows()
 
