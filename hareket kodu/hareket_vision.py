@@ -17,12 +17,8 @@ import cv2  # pyright: ignore[reportMissingImports]
 import numpy as np  # pyright: ignore[reportMissingImports]
 from djitellopy import Tello  # pyright: ignore[reportMissingImports]
 
-try:
-    from system.vision.detect_track import DetectTrackSystem
-    _VISION_IMPORT_ERROR = None
-except Exception as vision_import_exc:
-    DetectTrackSystem = None  # type: ignore[assignment]
-    _VISION_IMPORT_ERROR = vision_import_exc
+DetectTrackSystem = None  # type: ignore[assignment]
+_VISION_IMPORT_ERROR = None
 
 
 def parse_runtime_args():
@@ -81,7 +77,6 @@ MANUAL_TAKEOFF_HOVER_CM = 28
 MANUAL_TAKEOFF_TOL_CM = 7
 MANUAL_TAKEOFF_MAX_DESCEND_CM = 70
 AUTO_MIN_BATTERY = 25
-<<<<<<< HEAD
 BATTERY_POLL_SEC = 5.0
 MANUAL_SPEED_LIMIT_CM_S = 55
 
@@ -108,26 +103,19 @@ POWER_SAVE_BAT_CRIT = 17
 POWER_SAVE_SCALE_MID = 0.92
 POWER_SAVE_SCALE_LOW = 0.84
 POWER_SAVE_SCALE_CRIT = 0.74
-=======
-BATTERY_POLL_SEC = 1.5
 BATTERY_OPT_ENABLE = True
 ECO_BATTERY_LOW = 35
 ECO_BATTERY_CRIT = 25
 ECO_SPEED_SCALE_LOW = 0.78
 ECO_SPEED_SCALE_CRIT = 0.62
->>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
 
 # =========================================================
 # GORUNTU ISLEME
 # =========================================================
 VISION_AUTO_ENABLE = True
-<<<<<<< HEAD
-VISION_UPDATE_INTERVAL_SEC = 0.40
-=======
 VISION_UPDATE_INTERVAL_SEC = 0.12
 VISION_UPDATE_INTERVAL_LOW = 0.20
 VISION_UPDATE_INTERVAL_CRIT = 0.28
->>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
 VISION_RESULT_TTL_SEC = 1.2
 VISION_TRACK_LOST_SEC = 5.0
 VISION_MIN_TRACK_BOX_W = 28
@@ -1282,6 +1270,8 @@ vision_last_run_t = 0.0
 vision_last_ok_t = 0.0
 vision_last_error = ""
 vision_last_infer_ms = 0.0
+vision_init_thread = None
+vision_init_running = False
 ui_panel_visible = False
 
 # =========================================================
@@ -1490,6 +1480,38 @@ def init_vision_system():
         return False
 
 
+def start_vision_init_async(label="VISION"):
+    global vision_enabled, vision_init_thread, vision_init_running
+
+    if vision_system is not None:
+        vision_enabled = True
+        start_vision_thread()
+        toast(f"{label}: ACIK", 1.2)
+        return True
+    if vision_init_running:
+        toast(f"{label}: yukleniyor", 1.2)
+        return False
+
+    vision_init_running = True
+
+    def _worker():
+        global vision_init_running
+        try:
+            ok = init_vision_system()
+            if ok:
+                start_vision_thread()
+                toast(f"{label}: hazir (threaded)", 1.8)
+            else:
+                print(f"[VISION] Devre disi: {vision_last_error}")
+        finally:
+            vision_init_running = False
+
+    vision_init_thread = threading.Thread(target=_worker, daemon=True)
+    vision_init_thread.start()
+    toast(f"{label}: yukleniyor", 1.2)
+    return False
+
+
 def short_vision_error(max_len=42):
     msg = (vision_last_error or "").strip()
     if not msg:
@@ -1674,18 +1696,11 @@ def do_flip(direction):
         toast(f"SIM TAKLA: {names.get(direction, direction)}")
         return
     if not safe_is_flying(): toast("Takla icin once havalanin!"); return
-<<<<<<< HEAD
     bat_now = battery_level if battery_level >= 0 else safe_get_battery(-1)
     if bat_now != -1 and bat_now < FLIP_MIN_BATTERY:
         toast(f"Takla iptal: pil dusuk ({bat_now}%)")
         return
     pre_flip_height = safe_get_height_cm(MANUAL_TAKEOFF_HOVER_CM)
-=======
-    battery_now = safe_get_battery(-1)
-    if battery_now != -1 and battery_now < AUTO_MIN_BATTERY:
-        toast(f"Takla iptal: Batarya dusuk ({battery_now}%)")
-        return
->>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
     last_flip_t = now
     try:
         stop_and_hover()
@@ -2256,6 +2271,11 @@ if __name__ == "__main__":
 
     start_keyboard_listener()
     cv2.namedWindow("TELLO UI", cv2.WINDOW_NORMAL)
+    startup_frame = np.zeros((DISPLAY_H, DISPLAY_W, 3), dtype=np.uint8)
+    cv2.putText(startup_frame, "TELLO UI BASLATILIYOR...", (35, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
+    cv2.imshow("TELLO UI", startup_frame)
+    cv2.waitKey(1)
 
     ok = init_stream()
     if not ok: recover_stream("init fail")
@@ -2264,13 +2284,9 @@ if __name__ == "__main__":
     t_rc.start()
 
     if VISION_AUTO_ENABLE:
-        if init_vision_system():
-            start_vision_thread()
-            toast("VISION: hazir (threaded)", 1.8)
-        else:
-            print(f"[VISION] Devre disi: {vision_last_error}")
+        start_vision_init_async("VISION")
 
-    last_speed_force_t = 0.0
+    last_speed_force_t = time.time()
     SPEED_FORCE_EVERY  = 10.0
 
     if video_mode:
@@ -2344,15 +2360,9 @@ if __name__ == "__main__":
     
             photo_requested = 'f' in pressed_once
     
-<<<<<<< HEAD
-            # Otonom çalışırken sadece iptal/acil tuşları
-            if auto_running:
-                pressed_once = [k for k in pressed_once if k in ('space', 'm', 'tab') or k in CANCEL_KEYS]
-=======
             # Otonom/gosteri çalışırken sadece iptal/acil tuşları
             if auto_running or show_running:
-                pressed_once = [k for k in pressed_once if k in ('space','o','ö','m','tab')]
->>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
+                pressed_once = [k for k in pressed_once if k in ('space', 'm', 'tab') or k in CANCEL_KEYS]
     
             # --- Tuş işleme ---
             if auto_running and photo_requested and 'f' not in pressed_once:
@@ -2404,11 +2414,7 @@ if __name__ == "__main__":
                         vision_last_objects = []
                         toast("VISION: KAPALI")
                     else:
-                        if init_vision_system():
-                            start_vision_thread()
-                            toast("VISION: ACIK")
-                        else:
-                            toast(f"VISION HATA: {short_vision_error()}", 2.8)
+                        start_vision_init_async("VISION")
     
                 elif k == 'm':
                     emergency = False; auto_cancel = True; auto_running = False
@@ -2420,10 +2426,8 @@ if __name__ == "__main__":
                 elif k == 'g' and not auto_running:
                     # VISION TABANLI INSAN TAKIBI BASLAT
                     if not vision_enabled:
-                        if not init_vision_system():
-                            toast(f"VISION HATA: {short_vision_error()}", 2.8)
-                            continue
-                        start_vision_thread()
+                        start_vision_init_async("VISION")
+                        continue
                     with vision_lock:
                         _target = vision_last_target
                         _persons = list(vision_last_persons) if vision_last_persons else []
@@ -2457,10 +2461,8 @@ if __name__ == "__main__":
                 elif k == 'enter' and not auto_running:
                     # ENTER de ayni sekilde vision takip baslatir
                     if not vision_enabled:
-                        if not init_vision_system():
-                            toast(f"VISION HATA: {short_vision_error()}", 2.8)
-                            continue
-                        start_vision_thread()
+                        start_vision_init_async("VISION")
+                        continue
                     with vision_lock:
                         _target = vision_last_target
                         _persons = list(vision_last_persons) if vision_last_persons else []
@@ -2748,8 +2750,7 @@ if __name__ == "__main__":
                     mode = 0; reset_tracking()
     
             # --- MANUEL ---
-<<<<<<< HEAD
-            elif mode == 0 and not emergency and not auto_running:
+            elif mode == 0 and not emergency and not auto_running and not show_running:
                 axis_speed = manual_axis_speed_from_battery(battery_level)
                 if key_down('w'): fb =  axis_speed
                 if key_down('s'): fb = -axis_speed
@@ -2759,33 +2760,13 @@ if __name__ == "__main__":
                 if key_down('e'): yv =  axis_speed
                 if key_down('z'): ud =  axis_speed
                 if key_down('x'): ud = -axis_speed
+                if mevlana_mode:
+                    yv = max(24, int(MEVLANA_YAW_SPEED * get_runtime_speed_scale()))
 
                 manual_input_active = any((lr, fb, ud, yv))
                 hover_ud = compute_manual_hover_ud(now, manual_input_active)
                 if (not manual_input_active) and hover_ud != 0:
                     ud = int(hover_ud)
-=======
-            elif mode == 0 and not emergency and not auto_running and not show_running:
-                manual_speed = max(24, int(MAX_SPEED * get_runtime_speed_scale()))
-                if key_down('w'): fb =  manual_speed
-                if key_down('s'): fb = -manual_speed
-                if key_down('a'): lr = -manual_speed
-                if key_down('d'): lr =  manual_speed
-                if key_down('q'): yv = -manual_speed
-                if key_down('e'): yv =  manual_speed
-                if key_down('z'): ud =  manual_speed
-                if key_down('x'): ud = -manual_speed
-                if mevlana_mode and not show_running:
-                    yv = max(24, int(MEVLANA_YAW_SPEED * get_runtime_speed_scale()))
-
-            if not emergency and not auto_running and not show_running:
-                speed_scale = get_runtime_speed_scale()
-                if speed_scale < 0.999:
-                    lr = int(lr * speed_scale)
-                    fb = int(fb * speed_scale)
-                    ud = int(ud * speed_scale)
-                    yv = int(yv * speed_scale)
->>>>>>> 142f0e58c7e01adbff1b55ce593ceb563ad287ce
     
             # --- RC GONDER ---
             if emergency or auto_running or show_running:
