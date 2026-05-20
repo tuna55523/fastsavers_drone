@@ -569,11 +569,21 @@ class IdentityManager:
         pose_verticality = self._clamp(pose_signals.get("pose_verticality", 0.0))
         pose_stability = self._clamp(pose_signals.get("pose_stability", 0.0))
         pose_weight = pose_quality * (0.55 + 0.45 * pose_stability)
+        horizontal_relax = pose_weight * (1.0 - pose_verticality) * (
+            0.44 * (1.0 - upper_flutter)
+            + 0.28 * (1.0 - panic_unstable)
+            + 0.18 * (1.0 - inactivity)
+            + 0.10 * (1.0 - panic_turns)
+        )
         pose_struggle = pose_weight * low_progress * (
             0.62 * pose_flail
             + 0.38 * (pose_verticality * low_progress)
         )
         pose_swim = pose_weight * (1.0 - pose_verticality) * swim_progress
+
+        panic_low_speed *= (1.0 - 0.34 * horizontal_relax)
+        flutter_cue *= (1.0 - 0.42 * horizontal_relax)
+        struggle_progress *= (1.0 - 0.24 * horizontal_relax)
 
         risk = 0.05
         risk += 0.42 * inactivity
@@ -585,6 +595,7 @@ class IdentityManager:
         risk -= 0.28 * swim
         risk -= 0.18 * calm_swim
         risk -= 0.16 * pose_swim
+        risk -= 0.26 * horizontal_relax
 
         return self._clamp(risk, 0.0, 1.0)
 
@@ -601,6 +612,11 @@ class IdentityManager:
         pose_quality = self._clamp(pose_signals.get("pose_quality", 0.0))
         pose_stability = self._clamp(pose_signals.get("pose_stability", 0.0))
         pose_weight = pose_quality * (0.55 + 0.45 * pose_stability)
+        horizontal_relax = pose_weight * (1.0 - pose_verticality) * (
+            0.52 * (1.0 - upper_flutter)
+            + 0.28 * (1.0 - unstable)
+            + 0.20 * (1.0 - low_progress)
+        )
         pose_distress = pose_weight * low_progress * (
             0.55 * pose_flail
             + 0.45 * (pose_verticality * low_progress)
@@ -614,33 +630,43 @@ class IdentityManager:
             + 0.06 * mid_speed_band
         )
         acute += 0.10 * pose_distress
+        acute -= 0.12 * horizontal_relax
         return self._clamp(acute)
 
     def apply_risk_persistence(self, person, raw_risk, acute_distress, now):
         state = person["alert_state"]
         progress_ratio = person.get("features", {}).get("progress_ratio", 1.0)
         upper_motion = person.get("features", {}).get("upper_motion", 0.0)
+        pose_verticality = self._clamp(person.get("features", {}).get("pose_verticality", 0.0))
+        pose_quality = self._clamp(person.get("features", {}).get("pose_quality", 0.0))
+        pose_stability = self._clamp(person.get("features", {}).get("pose_stability", 0.0))
+        speed_cv = self._clamp(person.get("features", {}).get("speed_cv", 0.0) / 1.2)
         low_progress = 1.0 - self._norm(progress_ratio, 0.25, 0.70)
         upper_flutter = self._norm(upper_motion, 0.032, 0.18)
+        horizontal_relax = pose_quality * (0.55 + 0.45 * pose_stability) * (1.0 - pose_verticality) * (
+            0.48 * (1.0 - upper_flutter)
+            + 0.32 * (1.0 - speed_cv)
+            + 0.20 * (1.0 - low_progress)
+        )
 
         distress_shape = low_progress * upper_flutter
         watch_enter = self._clamp(
-            RISK_WATCH_ENTER - 0.12 * low_progress - 0.08 * distress_shape,
+            RISK_WATCH_ENTER - 0.12 * low_progress - 0.08 * distress_shape + 0.10 * horizontal_relax,
             0.30,
             0.95,
         )
         alert_enter = self._clamp(
-            RISK_ALERT_ENTER - 0.10 * low_progress - 0.10 * distress_shape,
+            RISK_ALERT_ENTER - 0.10 * low_progress - 0.10 * distress_shape + 0.14 * horizontal_relax,
             0.46,
             0.98,
         )
         watch_enter_seconds = max(
             0.15,
-            RISK_WATCH_ENTER_SECONDS * (1.0 - 0.62 * low_progress - 0.25 * distress_shape),
+            RISK_WATCH_ENTER_SECONDS * (1.0 - 0.62 * low_progress - 0.25 * distress_shape) * (1.0 + 0.75 * horizontal_relax),
         )
         alert_enter_seconds = max(
             0.30,
-            RISK_ALERT_ENTER_SECONDS * (1.0 - 0.45 * low_progress - 0.35 * distress_shape),
+            RISK_ALERT_ENTER_SECONDS * (1.0 - 0.45 * low_progress - 0.35 * distress_shape) * (1.0 + 0.55 * horizontal_relax),
         )
 
         fast_watch_thr = max(0.36, RISK_FAST_WATCH - 0.14 * low_progress)
@@ -664,6 +690,11 @@ class IdentityManager:
             watch_enter_seconds *= 0.78
             alert_enter_seconds *= 0.84
             fast_alert_seconds *= 0.75
+        if horizontal_relax >= 0.42 and acute_distress < 0.72:
+            watch_enter_seconds *= 1.30
+            alert_enter_seconds *= 1.35
+            fast_watch_seconds *= 1.20
+            fast_alert_seconds *= 1.25
 
         rapid_watch_condition = (
             raw_risk >= max(0.36, watch_enter - 0.10)
@@ -696,6 +727,8 @@ class IdentityManager:
                 or (low_progress >= 0.72 and upper_flutter >= 0.26)
             )
         )
+        if horizontal_relax >= 0.46 and acute_distress < 0.72 and raw_risk < 0.72:
+            fast_watch_condition = False
         if fast_watch_condition:
             if person["fast_watch_since"] is None:
                 person["fast_watch_since"] = now
@@ -710,6 +743,8 @@ class IdentityManager:
                 or (raw_risk >= 0.60 and low_progress >= 0.72 and upper_flutter >= 0.38)
             )
         )
+        if horizontal_relax >= 0.42 and acute_distress < 0.78 and raw_risk < 0.82:
+            fast_alert_condition = False
         if fast_alert_condition:
             if person["fast_alert_since"] is None:
                 person["fast_alert_since"] = now

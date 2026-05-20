@@ -20,6 +20,8 @@ from config import (
     POSE_AUTO_DOWNLOAD,
     POSE_FALLBACK_MODEL_PATH,
     CONF_THRESHOLD,
+    FALLBACK_CONF_THRESHOLD,
+    FALLBACK_INFER_IMGSZ,
     OBJECT_DETECTION_ENABLED,
     OBJECT_CONF_THRESHOLD,
     OBJECT_DISPLAY_CLASSES,
@@ -70,6 +72,7 @@ class DetectTrackSystem:
         self.pose_model = self._load_pose_model()
 
         self.identity = IdentityManager()
+        self.activity_state = {}
 
     def _resolve_person_class_ids(self):
         return self._resolve_named_class_ids(self.model, ["person"])
@@ -124,6 +127,45 @@ class DetectTrackSystem:
 
         print("[VISION] Object detection disabled, no usable model available.")
         return None
+
+    def _run_person_inference(self, frame, conf_threshold, imgsz=None):
+        if self.model is None:
+            return None
+
+        infer_kwargs = {
+            "verbose": False,
+            "conf": float(conf_threshold),
+        }
+        if self.person_class_ids:
+            infer_kwargs["classes"] = self.person_class_ids
+        if imgsz:
+            infer_kwargs["imgsz"] = int(imgsz)
+
+        try:
+            return self.model(frame, **infer_kwargs)[0]
+        except Exception as e:
+            print(f"[VISION] Person inference failed: {e}")
+            return None
+
+    def _has_person_boxes(self, result):
+        if result is None or result.boxes is None:
+            return False
+        try:
+            return len(result.boxes) > 0
+        except Exception:
+            return False
+
+    def _run_person_inference_with_fallback(self, frame):
+        primary = self._run_person_inference(frame, CONF_THRESHOLD)
+        if self._has_person_boxes(primary):
+            return primary
+
+        # Kus bakisi / uzak kadraj videolarda ana esik bazen fazla kati kaliyor.
+        # Sadece bos sonuc gelirse daha dusuk conf ve daha buyuk imgsz ile ikinci sans ver.
+        fallback = self._run_person_inference(frame, FALLBACK_CONF_THRESHOLD, FALLBACK_INFER_IMGSZ)
+        if self._has_person_boxes(fallback):
+            return fallback
+        return primary
 
     def _load_pose_model(self):
         if YOLO is None or self.model is None:
@@ -181,6 +223,7 @@ class DetectTrackSystem:
     def reset_tracking(self):
         self.identity = IdentityManager()
         self.frame_idx = 0
+        self.activity_state = {}
 
     # ------------------------------------------------
     # HELPERS
@@ -617,10 +660,18 @@ class DetectTrackSystem:
 
         progress_ratio = max(0.0, min(1.0, float(features.get("progress_ratio", 0.0))))
         speed_norm = max(0.0, min(1.0, float(features.get("speed_norm", 0.0)) / 2.4))
+        speed_cv = max(0.0, min(1.0, float(features.get("speed_cv", 0.0)) / 1.2))
         direction_change = max(0.0, min(1.0, float(features.get("direction_change", 0.0)) / 0.55))
         upper_motion = max(0.0, min(1.0, float(features.get("upper_motion", 0.0)) / 0.18))
         pose_quality = max(0.0, min(1.0, float(features.get("pose_quality", 0.0))))
         pose_verticality = max(0.0, min(1.0, float(features.get("pose_verticality", 0.0))))
+        pose_stability = max(0.0, min(1.0, float(features.get("pose_stability", 0.0))))
+
+        horizontal_relax = pose_quality * (0.55 + 0.45 * pose_stability) * (1.0 - pose_verticality) * (
+            0.46 * (1.0 - upper_motion)
+            + 0.28 * (1.0 - speed_cv)
+            + 0.26 * max(progress_ratio, 0.32)
+        )
 
         swim_score = 0.0
         swim_score += 0.34 * progress_ratio
@@ -629,10 +680,40 @@ class DetectTrackSystem:
         swim_score += 0.14 * (1.0 - upper_motion)
         swim_score += 0.10 * (pose_quality * (1.0 - pose_verticality))
         swim_score -= 0.38 * raw_risk
+        swim_score += 0.22 * horizontal_relax
         swim_score = max(0.0, min(1.0, swim_score))
 
-        label = "SWIMMING" if swim_score >= 0.42 and person.get("alert_state", "SAFE") == "SAFE" else "NOT SWIMMING"
-        return label, swim_score
+        pid = int(person.get("id", -1))
+        swim_signal = max(swim_score, 0.84 * horizontal_relax + 0.16 * progress_ratio)
+        state = self.activity_state.get(pid, {"swim_conf": 0.0, "label": "NOT SWIMMING"})
+        prev_conf = float(state.get("swim_conf", 0.0))
+        alpha = 0.40 if swim_signal > prev_conf else 0.16
+        swim_conf = max(0.0, min(1.0, prev_conf * (1.0 - alpha) + swim_signal * alpha))
+
+        label = str(state.get("label", "NOT SWIMMING"))
+        if label != "SWIMMING":
+            if (
+                swim_conf >= 0.46
+                and person.get("alert_state", "SAFE") == "SAFE"
+                and raw_risk < 0.68
+                and acute < 0.72
+            ):
+                label = "SWIMMING"
+            else:
+                label = "NOT SWIMMING"
+        else:
+            if (
+                swim_conf < 0.34
+                or raw_risk >= 0.74
+                or acute >= 0.78
+                or person.get("alert_state", "SAFE") == "ALERT"
+            ):
+                label = "NOT SWIMMING"
+            else:
+                label = "SWIMMING"
+
+        self.activity_state[pid] = {"swim_conf": swim_conf, "label": label}
+        return label, swim_conf
 
     def _danger_status(self, person):
         in_water = bool(person.get("in_water", False))
@@ -640,13 +721,34 @@ class DetectTrackSystem:
         risk = float(person.get("risk", 0.0))
         raw_risk = float(person.get("raw_risk", risk))
         acute = float(person.get("acute_distress", 0.0))
-        swim_score = float(person.get("swim_score", 0.0))
+        swim_score = float(person.get("swim_confidence", person.get("swim_score", 0.0)))
         water_score = float(person.get("water_score", 0.0))
+        features = person.get("features", {})
+        pose_quality = max(0.0, min(1.0, float(features.get("pose_quality", 0.0))))
+        pose_verticality = max(0.0, min(1.0, float(features.get("pose_verticality", 0.0))))
+        pose_stability = max(0.0, min(1.0, float(features.get("pose_stability", 0.0))))
+        upper_motion = max(0.0, min(1.0, float(features.get("upper_motion", 0.0)) / 0.18))
+        progress_ratio = max(0.0, min(1.0, float(features.get("progress_ratio", 0.0))))
+        speed_cv = max(0.0, min(1.0, float(features.get("speed_cv", 0.0)) / 1.2))
+        horizontal_relax = pose_quality * (0.55 + 0.45 * pose_stability) * (1.0 - pose_verticality) * (
+            0.48 * (1.0 - upper_motion)
+            + 0.30 * (1.0 - speed_cv)
+            + 0.22 * max(progress_ratio, 0.28)
+        )
 
         if WATER_FILTER_ENABLED and (not in_water or water_score < 0.30):
             return "SAFE", False
 
         if person.get("source") == "face":
+            return "SAFE", False
+
+        if (
+            horizontal_relax >= 0.50
+            and swim_score >= 0.34
+            and raw_risk < 0.70
+            and acute < 0.74
+            and alert_state != "ALERT"
+        ):
             return "SAFE", False
 
         is_danger = (
@@ -661,14 +763,7 @@ class DetectTrackSystem:
     # MAIN RUN
     # ------------------------------------------------
     def run(self, frame, frame_ts=None):
-        infer_kwargs = {
-            "verbose": False,
-            "conf": CONF_THRESHOLD,
-        }
-        if self.person_class_ids:
-            infer_kwargs["classes"] = self.person_class_ids
-
-        results = self.model(frame, **infer_kwargs)[0] if self.model is not None else None
+        results = self._run_person_inference_with_fallback(frame)
         aux_objects = self._collect_aux_objects(frame)
         use_pose_this_frame = (
             self.pose_model is not None
@@ -767,6 +862,7 @@ class DetectTrackSystem:
             activity_label, swim_score = self._activity_label(p)
             p["activity_label"] = activity_label
             p["swim_score"] = swim_score
+            p["swim_confidence"] = swim_score
             status_label, is_danger = self._danger_status(p)
             p["status_label"] = status_label
             p["is_danger"] = is_danger
@@ -786,11 +882,14 @@ class DetectTrackSystem:
             x1, y1, x2, y2 = p["bbox"]
             risk = p["risk"]
             status_label = p.get("status_label", "SAFE")
+            activity_label = p.get("activity_label", "NOT SWIMMING")
             is_danger = bool(p.get("is_danger", False))
 
             color = (0, 255, 0)
             if is_danger:
                 color = (0, 0, 255)
+            elif status_label == "WATCH":
+                color = (0, 165, 255)
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             if POSE_DRAW_OVERLAY:
@@ -798,7 +897,7 @@ class DetectTrackSystem:
 
             cv2.putText(
                 frame,
-                f"ID:{p['id']} {status_label} R:{risk:.2f}",
+                f"ID:{p['id']} {status_label} | {activity_label} | R:{risk:.2f}",
                 (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
