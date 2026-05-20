@@ -203,7 +203,6 @@ def draw_hud(frame, battery, auto_mode, op_state, target, fps, takeoff_busy, lan
 
 
 def _start_takeoff_async(drone):
-    global TAKEOFF_BUSY, LAND_BUSY
     if TAKEOFF_BUSY or LAND_BUSY:
         return
 
@@ -222,7 +221,6 @@ def _start_takeoff_async(drone):
 
 
 def _start_land_async(drone):
-    global TAKEOFF_BUSY, LAND_BUSY
     if TAKEOFF_BUSY or LAND_BUSY:
         return
 

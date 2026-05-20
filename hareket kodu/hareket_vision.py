@@ -1343,7 +1343,7 @@ def rc_sender_loop():
 
 
 def recover_stream(reason=""):
-    global frame_read, last_watchdog_reset_t, last_frame_sig, last_frame_change_t, video_cap
+    global frame_read, last_watchdog_reset_t, last_frame_sig, last_frame_change_t
     now = time.time()
     if now - last_watchdog_reset_t < WATCHDOG_RESET_COOLDOWN: return False
     last_watchdog_reset_t = now
