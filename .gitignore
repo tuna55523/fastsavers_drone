@@ -9,6 +9,7 @@ __pycache__/
 # Logs and runtime outputs
 logs/
 *.log
+hareket kodu/motion_calibration.json
 
 # Gradle/Android local caches and build outputs
 .gradle/

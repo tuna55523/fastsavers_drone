@@ -31,18 +31,19 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 DISPLAY_W = 1280 
 DISPLAY_H = 720
-TARGET_FPS = 60
+TARGET_FPS = 45
 FRAME_TIME = 1.0 / TARGET_FPS
 
-MAX_SPEED = 100  # manuel rc_control icin
+MAX_SPEED = 72  # manuel rc_control icin (batarya dostu)
 FLIP_COOLDOWN_SEC = 1.5
+FLIP_MIN_BATTERY = 20
 
 # =========================================================
 # OTONOM HIZ AYARLARI (rc_control tabanli)
 # =========================================================
 # Drone cm/s olarak hareket eder, biz sure ile mesafeyi kontrol ederiz
 # move_forward(200) yerine: rc ile ~2.0 sn boyunca 60 cm/s ileri
-AUTO_FWD_SPEED = 60   # cm/s ileri hiz (rc_control scale: 0-100)
+AUTO_FWD_SPEED = 52   # cm/s ileri hiz (rc_control scale: 0-100)
 AUTO_YAW_SPEED = 40   # donme hizi (rc_control scale)
 AUTO_HOME_CORR_SPEED = 35
 AUTO_DOCK_SPEED = 12
@@ -72,15 +73,53 @@ MANUAL_TAKEOFF_HOVER_CM = 28
 MANUAL_TAKEOFF_TOL_CM = 7
 MANUAL_TAKEOFF_MAX_DESCEND_CM = 70
 AUTO_MIN_BATTERY = 25
-BATTERY_POLL_SEC = 1.5
+BATTERY_POLL_SEC = 5.0
+MANUAL_SPEED_LIMIT_CM_S = 55
+
+# Manuel modda havada beklerken irtifa tutma
+HOVER_HOLD_ENABLED = True
+HOVER_HOLD_IDLE_DELAY_SEC = 0.28
+HOVER_HOLD_SAMPLE_SEC = 0.20
+HOVER_HOLD_DEADBAND_CM = 7.0
+HOVER_HOLD_GAIN = 1.7
+HOVER_HOLD_MIN_UD = 10
+HOVER_HOLD_MAX_UD = 22
+
+# Takla sonrasi toparlama
+FLIP_RECOVER_SEC = 1.5
+FLIP_RECOVER_DEADBAND_CM = 5.0
+FLIP_RECOVER_GAIN = 2.1
+FLIP_RECOVER_MAX_UD = 26
+
+# Pil tasarrufu (dinamik)
+POWER_SAVE_ENABLED = True
+POWER_SAVE_BAT_MID = 35
+POWER_SAVE_BAT_LOW = 25
+POWER_SAVE_BAT_CRIT = 17
+POWER_SAVE_SCALE_MID = 0.92
+POWER_SAVE_SCALE_LOW = 0.84
+POWER_SAVE_SCALE_CRIT = 0.74
 
 # =========================================================
 # GORUNTU ISLEME
 # =========================================================
 VISION_AUTO_ENABLE = True
-VISION_UPDATE_INTERVAL_SEC = 0.12
+VISION_UPDATE_INTERVAL_SEC = 0.40
 VISION_RESULT_TTL_SEC = 1.2
 VISION_TRACK_LOST_SEC = 5.0
+VISION_MIN_TRACK_BOX_W = 28
+VISION_MIN_TRACK_BOX_H = 38
+VISION_REACQ_MAX_CENTER_DIST_PX = 190.0
+VISION_TARGET_SWITCH_COOLDOWN_SEC = 0.8
+VISION_TRACK_ERROR_COOLDOWN_SEC = 1.2
+TRACK_ONLY_SAFE_PERSON = True
+DANGER_HOLD_ON_TRACK = True
+DANGER_AUTO_SNAPSHOT = True
+DANGER_SNAPSHOT_COOLDOWN_SEC = 2.4
+DANGER_TOAST_COOLDOWN_SEC = 1.5
+VISION_STICKY_LOCK = True
+VISION_LOCK_PERSIST_ON_OCCLUSION = True
+VISION_REACQ_KEEP_SEC = 14.0
 
 AUTO_ROUTE_STEPS = [
     ("forward",   "1m ileri", AUTO_FWD_SPEED, DIST_100_SEC),
@@ -161,6 +200,7 @@ FAST_KEYS  = True
 pressed    = set()
 key_events = []
 _listener  = None
+CANCEL_KEYS = {"o", "\u00f6"}
 
 try:
     from pynput import keyboard  # pyright: ignore[reportMissingModuleSource]
@@ -180,8 +220,11 @@ def normalize_key_token(token):
         "return": "enter",
         "esc": "escape",
         "spacebar": "space",
-        "ã¶": "ö",
-        "Ã¶": "ö",
+        "\u00f6": "\u00f6",
+        "\u00d6".lower(): "\u00f6",
+        "\u00c3\u00b6": "\u00f6",
+        "\u00c3\u0192\u00c2\u00b6": "\u00f6",
+        "\u00c3\u00a3\u00c2\u00b6": "\u00f6",
     }
     return aliases.get(text, text)
 
@@ -297,6 +340,167 @@ def clamp_bbox_to_frame(bbox, fw, fh):
     w = clamp(w, 20, fw - x)
     h = clamp(h, 20, fh - y)
     return (x, y, w, h)
+
+
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def normalize_xyxy_bbox(bbox, fw, fh, min_w=10, min_h=10):
+    if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+        return None
+    try:
+        x1, y1, x2, y2 = [int(round(float(v))) for v in bbox[:4]]
+    except Exception:
+        return None
+
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+
+    x1 = clamp(x1, 0, max(0, fw - 1))
+    y1 = clamp(y1, 0, max(0, fh - 1))
+    x2 = clamp(x2, x1 + 1, max(x1 + 1, fw - 1))
+    y2 = clamp(y2, y1 + 1, max(y1 + 1, fh - 1))
+
+    if (x2 - x1) < int(min_w) or (y2 - y1) < int(min_h):
+        return None
+    return (x1, y1, x2, y2)
+
+
+def bbox_xyxy_center(bbox):
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+
+
+def bbox_xyxy_iou(a, b):
+    if a is None or b is None:
+        return 0.0
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = float((ix2 - ix1) * (iy2 - iy1))
+    area_a = float(max(1, (ax2 - ax1) * (ay2 - ay1)))
+    area_b = float(max(1, (bx2 - bx1) * (by2 - by1)))
+    union = max(1.0, area_a + area_b - inter)
+    return inter / union
+
+
+def sanitize_person_detections(persons, fw, fh):
+    clean = []
+    if not isinstance(persons, (list, tuple)):
+        return clean
+
+    anon_idx = 0
+    for person in persons:
+        if not isinstance(person, dict):
+            continue
+        bbox = normalize_xyxy_bbox(
+            person.get("bbox"),
+            fw,
+            fh,
+            min_w=VISION_MIN_TRACK_BOX_W,
+            min_h=VISION_MIN_TRACK_BOX_H,
+        )
+        if bbox is None:
+            continue
+
+        normalized = dict(person)
+        person_id = normalized.get("id")
+        if person_id is None:
+            person_id = f"anon_{anon_idx}"
+            anon_idx += 1
+        normalized["id"] = person_id
+        normalized["bbox"] = bbox
+        normalized["risk"] = clamp(safe_float(normalized.get("risk", 0.0)), 0.0, 1.0)
+        normalized["confidence"] = clamp(
+            safe_float(normalized.get("confidence", normalized.get("conf", 0.0))),
+            0.0,
+            1.0,
+        )
+        clean.append(normalized)
+    return clean
+
+
+def sanitize_object_detections(objects, fw, fh):
+    clean = []
+    if not isinstance(objects, (list, tuple)):
+        return clean
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        bbox = normalize_xyxy_bbox(obj.get("bbox"), fw, fh, min_w=12, min_h=12)
+        if bbox is None:
+            continue
+        normalized = dict(obj)
+        normalized["bbox"] = bbox
+        normalized["confidence"] = clamp(
+            safe_float(normalized.get("confidence", normalized.get("conf", 0.0))),
+            0.0,
+            1.0,
+        )
+        clean.append(normalized)
+    return clean
+
+
+def choose_tracked_person(persons, target_id, last_bbox):
+    if not persons:
+        return None, target_id
+
+    for person in persons:
+        if person.get("id") == target_id:
+            return person, target_id
+
+    best_person = None
+    best_score = -1e9
+    for person in persons:
+        bbox = person.get("bbox")
+        if bbox is None:
+            continue
+        score = 0.0
+        score += float(person.get("risk", 0.0)) * 0.60
+        score += float(person.get("confidence", 0.0)) * 0.28
+        is_danger = bool(person.get("is_danger", False))
+        if is_danger:
+            score += 0.10
+        if TRACK_ONLY_SAFE_PERSON:
+            score += -0.45 if is_danger else 0.22
+        if last_bbox is not None:
+            iou = bbox_xyxy_iou(bbox, last_bbox)
+            score += iou * 1.05
+            cx, cy = bbox_xyxy_center(bbox)
+            lx, ly = bbox_xyxy_center(last_bbox)
+            center_dist = float(((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5)
+            dist_norm = clamp(center_dist / VISION_REACQ_MAX_CENTER_DIST_PX, 0.0, 1.0)
+            score += (1.0 - dist_norm) * 0.55
+            if center_dist > VISION_REACQ_MAX_CENTER_DIST_PX:
+                score -= 0.55
+        if score > best_score:
+            best_score = score
+            best_person = person
+
+    if best_person is None:
+        return None, target_id
+    return best_person, best_person.get("id")
+
+
+def find_first_danger_person(persons, ignore_id=None):
+    if not persons:
+        return None
+    for person in persons:
+        if bool(person.get("is_danger", False)):
+            if ignore_id is None or person.get("id") != ignore_id:
+                return person
+    return None
 
 
 def blend_rect(img, x1, y1, x2, y2, color, alpha=0.35, border=None, thickness=1):
@@ -662,6 +866,40 @@ def safe_get_battery(default=-1):
     except: return int(default)
 
 
+def power_save_motion_scale(bat_value):
+    if not POWER_SAVE_ENABLED:
+        return 1.0
+    try:
+        bat = int(bat_value)
+    except Exception:
+        return 1.0
+    if bat < 0:
+        return 1.0
+    if bat <= POWER_SAVE_BAT_CRIT:
+        return POWER_SAVE_SCALE_CRIT
+    if bat <= POWER_SAVE_BAT_LOW:
+        return POWER_SAVE_SCALE_LOW
+    if bat <= POWER_SAVE_BAT_MID:
+        return POWER_SAVE_SCALE_MID
+    return 1.0
+
+
+def scale_axis_cmd(cmd, scale, min_abs=0):
+    if cmd == 0 or scale >= 0.999:
+        return int(cmd)
+    scaled = int(round(float(cmd) * float(scale)))
+    if scaled == 0:
+        scaled = 1 if cmd > 0 else -1
+    if min_abs > 0 and abs(scaled) < min_abs:
+        scaled = int(np.sign(scaled) * min_abs)
+    return int(clamp(scaled, -100, 100))
+
+
+def manual_axis_speed_from_battery(bat_value):
+    scale = power_save_motion_scale(bat_value)
+    return max(45, int(round(MAX_SPEED * scale)))
+
+
 def stop_and_hover():
     send_rc_control_safe(0, 0, 0, 0, reason="hover_stop", report_fail=False, report_success=False)
 
@@ -769,6 +1007,101 @@ def settle_manual_takeoff_height(
     return current_h <= (target_height_cm + tolerance_cm + 4.0)
 
 
+def reset_hover_hold_target(preferred_height_cm=MANUAL_TAKEOFF_HOVER_CM):
+    global hover_target_height_cm, hover_idle_since_t, hover_last_sample_t
+    if safe_is_flying():
+        measured = safe_get_height_cm(float(preferred_height_cm))
+        if measured > 0:
+            hover_target_height_cm = float(measured)
+        else:
+            hover_target_height_cm = float(preferred_height_cm)
+    else:
+        hover_target_height_cm = None
+    hover_idle_since_t = time.time()
+    hover_last_sample_t = 0.0
+
+
+def compute_manual_hover_ud(now, manual_input_active):
+    global hover_target_height_cm, hover_idle_since_t, hover_last_sample_t
+
+    if (
+        not HOVER_HOLD_ENABLED
+        or emergency
+        or auto_running
+        or takeoff_busy
+        or mode != 0
+        or (not safe_is_flying())
+    ):
+        hover_target_height_cm = None
+        hover_idle_since_t = now
+        return 0
+
+    sample_due = (now - hover_last_sample_t) >= HOVER_HOLD_SAMPLE_SEC
+    if manual_input_active:
+        hover_idle_since_t = now
+        if sample_due:
+            hover_last_sample_t = now
+            current_h = safe_get_height_cm(0.0)
+            if current_h > 0:
+                if hover_target_height_cm is None:
+                    hover_target_height_cm = float(current_h)
+                else:
+                    hover_target_height_cm = (hover_target_height_cm * 0.86) + (float(current_h) * 0.14)
+        return 0
+
+    if now - hover_idle_since_t < HOVER_HOLD_IDLE_DELAY_SEC:
+        return 0
+    if not sample_due:
+        return 0
+
+    hover_last_sample_t = now
+    default_h = MANUAL_TAKEOFF_HOVER_CM if hover_target_height_cm is None else hover_target_height_cm
+    current_h = safe_get_height_cm(default_h)
+    if current_h <= 0:
+        return 0
+
+    if hover_target_height_cm is None:
+        hover_target_height_cm = float(current_h)
+        return 0
+
+    delta_h = float(hover_target_height_cm - current_h)
+    if abs(delta_h) <= HOVER_HOLD_DEADBAND_CM:
+        return 0
+
+    ud_cmd = int(clamp(delta_h * HOVER_HOLD_GAIN, -HOVER_HOLD_MAX_UD, HOVER_HOLD_MAX_UD))
+    if 0 < abs(ud_cmd) < HOVER_HOLD_MIN_UD:
+        ud_cmd = int(np.sign(ud_cmd) * HOVER_HOLD_MIN_UD)
+    return int(ud_cmd)
+
+
+def stabilize_after_flip(reference_height_cm):
+    if not safe_is_flying():
+        return
+
+    try:
+        ref_height = float(reference_height_cm)
+    except Exception:
+        ref_height = 0.0
+    if ref_height <= 0:
+        ref_height = safe_get_height_cm(MANUAL_TAKEOFF_HOVER_CM)
+
+    deadline = time.time() + FLIP_RECOVER_SEC
+    while time.time() < deadline:
+        if emergency or auto_running or not safe_is_flying():
+            break
+        current_h = safe_get_height_cm(ref_height)
+        delta_h = ref_height - current_h
+        ud_cmd = 0
+        if abs(delta_h) > FLIP_RECOVER_DEADBAND_CM:
+            ud_cmd = int(clamp(delta_h * FLIP_RECOVER_GAIN, -FLIP_RECOVER_MAX_UD, FLIP_RECOVER_MAX_UD))
+            if 0 < abs(ud_cmd) < HOVER_HOLD_MIN_UD:
+                ud_cmd = int(np.sign(ud_cmd) * HOVER_HOLD_MIN_UD)
+        send_rc_control_safe(0, 0, ud_cmd, 0, reason="flip_recover", report_fail=False, report_success=False)
+        time.sleep(0.07)
+    stop_and_hover()
+    reset_hover_hold_target(ref_height)
+
+
 def force_sdk_speed_max():
     if (
         globals().get("auto_running", False)
@@ -778,9 +1111,9 @@ def force_sdk_speed_max():
     ):
         return False
     for fn in [
-        lambda: tello.set_speed(100),
-        lambda: tello.send_command_without_return("speed 100"),
-        lambda: tello.send_command_with_return("speed 100", timeout=2),
+        lambda: tello.set_speed(MANUAL_SPEED_LIMIT_CM_S),
+        lambda: tello.send_command_without_return(f"speed {MANUAL_SPEED_LIMIT_CM_S}"),
+        lambda: tello.send_command_with_return(f"speed {MANUAL_SPEED_LIMIT_CM_S}", timeout=2),
     ]:
         try: run_sdk_command(fn); return True
         except: pass
@@ -814,6 +1147,11 @@ vision_track_active    = False
 vision_track_target_id = None
 vision_track_lost_t    = None
 vision_track_bbox      = None
+vision_track_last_switch_t = 0.0
+vision_track_last_error_t = 0.0
+vision_track_wait_toast_t = 0.0
+danger_snapshot_last_t = 0.0
+danger_toast_last_t = 0.0
 
 frame_read            = None
 last_frame_sig        = None
@@ -836,6 +1174,9 @@ FPS_ALPHA  = 0.08
 auto_pose_hud = {"active": False, "x": 0.0, "y": 0.0, "yaw": 0.0}
 takeoff_busy = False
 last_flip_t = 0.0
+hover_target_height_cm = None
+hover_idle_since_t = time.time()
+hover_last_sample_t = 0.0
 
 roi_pending       = False
 roi_pending_bbox  = None
@@ -858,8 +1199,12 @@ ui_panel_visible = False
 rc_lr = 0; rc_fb = 0; rc_ud = 0; rc_yv = 0
 rc_lock    = threading.Lock()
 rc_running = True
-RC_HZ = 80.0
+RC_HZ = 45.0
+RC_IDLE_HZ = 20.0
+RC_LOW_BAT_HZ = 32.0
 RC_DT = 1.0 / RC_HZ
+RC_IDLE_DT = 1.0 / RC_IDLE_HZ
+RC_LOW_BAT_DT = 1.0 / RC_LOW_BAT_HZ
 
 
 def note_link_ok():
@@ -906,7 +1251,14 @@ def rc_sender_loop():
             lr = int(rc_lr); fb = int(rc_fb)
             ud = int(rc_ud); yv = int(rc_yv)
         send_rc_control_safe(lr, fb, ud, yv, reason="rc_sender")
-        time.sleep(RC_DT)
+        idle_rc = (lr == 0 and fb == 0 and ud == 0 and yv == 0)
+        if idle_rc:
+            sleep_dt = RC_IDLE_DT
+        else:
+            bat_now = battery_level
+            low_bat = POWER_SAVE_ENABLED and bat_now >= 0 and bat_now <= POWER_SAVE_BAT_LOW
+            sleep_dt = RC_LOW_BAT_DT if low_bat else RC_DT
+        time.sleep(sleep_dt)
 
 
 def recover_stream(reason=""):
@@ -947,6 +1299,8 @@ def reset_tracking():
     global lock_enabled, lock_hist, lock_edge, hist_conf, edge_conf, fused_conf, reacq_confirm
     global lost_since, roi_pending, roi_pending_bbox, roi_pending_frame
     global vision_track_active, vision_track_target_id, vision_track_lost_t, vision_track_bbox
+    global vision_track_last_switch_t, vision_track_last_error_t, vision_track_wait_toast_t
+    global danger_snapshot_last_t, danger_toast_last_t
 
     tracker = None; tracker_on = False
     template_gray = None; last_good_bbox = None; tm_conf = 0.0
@@ -958,6 +1312,11 @@ def reset_tracking():
     roi_pending = False; roi_pending_bbox = None; roi_pending_frame = None
     vision_track_active = False; vision_track_target_id = None
     vision_track_lost_t = None; vision_track_bbox = None
+    vision_track_last_switch_t = 0.0
+    vision_track_last_error_t = 0.0
+    vision_track_wait_toast_t = 0.0
+    danger_snapshot_last_t = 0.0
+    danger_toast_last_t = 0.0
 
 
 def set_auto_pose_hud(active=False, pose=None):
@@ -1050,7 +1409,6 @@ def _vision_worker_loop():
     global vision_last_target, vision_last_persons, vision_last_objects
     global vision_last_run_t, vision_last_ok_t
     global vision_last_error, vision_last_infer_ms
-    global vision_thread_running
 
     while vision_thread_running:
         if not vision_enabled or vision_system is None:
@@ -1078,6 +1436,24 @@ def _vision_worker_loop():
             else:
                 _, target, persons = run_result
                 objects = []
+
+            fh, fw = frame_bgr.shape[:2]
+            persons = sanitize_person_detections(persons, fw, fh)
+            objects = sanitize_object_detections(objects, fw, fh)
+            if isinstance(target, dict):
+                target = dict(target)
+                target_bbox = normalize_xyxy_bbox(
+                    target.get("bbox"),
+                    fw,
+                    fh,
+                    min_w=VISION_MIN_TRACK_BOX_W,
+                    min_h=VISION_MIN_TRACK_BOX_H,
+                )
+                if target_bbox is not None:
+                    target["bbox"] = target_bbox
+                elif target.get("id") is None:
+                    target = None
+
             with vision_lock:
                 vision_last_target = target
                 vision_last_persons = persons
@@ -1117,10 +1493,16 @@ def draw_vision_overlay(frame_bgr, now_ts):
     if now_ts - vision_last_ok_t > VISION_RESULT_TTL_SEC:
         return
 
-    target_id = None if vision_last_target is None else vision_last_target.get("id")
+    with vision_lock:
+        target_snapshot = dict(vision_last_target) if isinstance(vision_last_target, dict) else None
+        persons_snapshot = list(vision_last_persons) if vision_last_persons else []
+        objects_snapshot = list(vision_last_objects) if vision_last_objects else []
 
-    for obj in vision_last_objects:
-        x1, y1, x2, y2 = map(int, obj.get("bbox", (0, 0, 0, 0)))
+    target_id = None if target_snapshot is None else target_snapshot.get("id")
+    fh, fw = frame_bgr.shape[:2]
+
+    for obj in sanitize_object_detections(objects_snapshot, fw, fh):
+        x1, y1, x2, y2 = obj.get("bbox", (0, 0, 0, 0))
         label = str(obj.get("label", "object")).upper()
         conf = float(obj.get("confidence", 0.0))
         color = (0, 214, 255)
@@ -1136,8 +1518,8 @@ def draw_vision_overlay(frame_bgr, now_ts):
             cv2.LINE_AA,
         )
 
-    for person in vision_last_persons:
-        x1, y1, x2, y2 = map(int, person.get("bbox", (0, 0, 0, 0)))
+    for person in sanitize_person_detections(persons_snapshot, fw, fh):
+        x1, y1, x2, y2 = person.get("bbox", (0, 0, 0, 0))
         is_target = person.get("id") == target_id
         is_danger = bool(person.get("is_danger", False))
         status_label = str(person.get("status_label", "SAFE")).upper()
@@ -1172,13 +1554,19 @@ def do_flip(direction):
     if now - last_flip_t < FLIP_COOLDOWN_SEC:
         return
     if not safe_is_flying(): toast("Takla icin once havalanin!"); return
+    bat_now = battery_level if battery_level >= 0 else safe_get_battery(-1)
+    if bat_now != -1 and bat_now < FLIP_MIN_BATTERY:
+        toast(f"Takla iptal: pil dusuk ({bat_now}%)")
+        return
+    pre_flip_height = safe_get_height_cm(MANUAL_TAKEOFF_HOVER_CM)
     last_flip_t = now
     try:
         stop_and_hover()
         time.sleep(0.15)
         run_sdk_command(lambda: tello.flip(direction))
+        stabilize_after_flip(pre_flip_height)
         names = {'l': 'SOL', 'r': 'SAG', 'f': 'ILERI', 'b': 'GERI'}
-        toast(f"TAKLA: {names.get(direction, direction)}")
+        toast(f"TAKLA: {names.get(direction, direction)} | DENGELEME")
     except Exception as e:
         last_flip_t = 0.0
         toast(f"Takla hata: {e}")
@@ -1205,6 +1593,7 @@ def start_manual_takeoff():
             if ok:
                 settle_manual_takeoff_height()
                 h_now = int(round(safe_get_height_cm(MANUAL_TAKEOFF_HOVER_CM)))
+                reset_hover_hold_target(h_now)
                 toast(f"KALKIS {h_now}cm", 1.4)
             else:
                 toast("Kalkis zaman asimi")
@@ -1611,7 +2000,7 @@ if __name__ == "__main__":
             print(f"[VISION] Devre disi: {vision_last_error}")
 
     last_speed_force_t = 0.0
-    SPEED_FORCE_EVERY  = 3.0
+    SPEED_FORCE_EVERY  = 10.0
 
     toast("Hazir | F foto | P vision | G takip | TAB panel | V kalkis | R otonom", 3.0)
 
@@ -1668,7 +2057,7 @@ if __name__ == "__main__":
     
             # Otonom çalışırken sadece iptal/acil tuşları
             if auto_running:
-                pressed_once = [k for k in pressed_once if k in ('space','o','ö','m','tab')]
+                pressed_once = [k for k in pressed_once if k in ('space', 'm', 'tab') or k in CANCEL_KEYS]
     
             # --- Tuş işleme ---
             if auto_running and photo_requested and 'f' not in pressed_once:
@@ -1695,7 +2084,9 @@ if __name__ == "__main__":
                     except Exception as e: toast(f"Inis hata: {e}")
     
                 elif k == 'h' and not auto_running:
-                    stop_and_hover(); toast("HOVER")
+                    stop_and_hover()
+                    reset_hover_hold_target()
+                    toast("HOVER")
     
                 elif k == 'p' and not auto_running:
                     if vision_enabled:
@@ -1729,10 +2120,12 @@ if __name__ == "__main__":
                     with vision_lock:
                         _target = vision_last_target
                         _persons = list(vision_last_persons) if vision_last_persons else []
-                    if _target is not None:
+                    _persons = sanitize_person_detections(_persons, ww, hh)
+                    if _target is not None and _target.get("id") is not None:
                         vision_track_active = True
                         vision_track_target_id = _target.get("id")
                         vision_track_lost_t = None
+                        vision_track_last_switch_t = time.time()
                         mode = 1
                         fb_active = False; fb_prev_cmd = 0; dist_target_w = None
                         toast(f"VISION TAKIP: ID {vision_track_target_id} | Y: mesafe", 2.0)
@@ -1741,6 +2134,7 @@ if __name__ == "__main__":
                         vision_track_active = True
                         vision_track_target_id = best.get("id")
                         vision_track_lost_t = None
+                        vision_track_last_switch_t = time.time()
                         mode = 1
                         fb_active = False; fb_prev_cmd = 0; dist_target_w = None
                         toast(f"VISION TAKIP: ID {vision_track_target_id} | Y: mesafe", 2.0)
@@ -1763,10 +2157,12 @@ if __name__ == "__main__":
                     with vision_lock:
                         _target = vision_last_target
                         _persons = list(vision_last_persons) if vision_last_persons else []
-                    if _target is not None:
+                    _persons = sanitize_person_detections(_persons, ww, hh)
+                    if _target is not None and _target.get("id") is not None:
                         vision_track_active = True
                         vision_track_target_id = _target.get("id")
                         vision_track_lost_t = None
+                        vision_track_last_switch_t = time.time()
                         mode = 1
                         fb_active = False; fb_prev_cmd = 0; dist_target_w = None
                         toast(f"VISION TAKIP: ID {vision_track_target_id}", 2.0)
@@ -1775,6 +2171,7 @@ if __name__ == "__main__":
                         vision_track_active = True
                         vision_track_target_id = best.get("id")
                         vision_track_lost_t = None
+                        vision_track_last_switch_t = time.time()
                         mode = 1
                         fb_active = False; fb_prev_cmd = 0; dist_target_w = None
                         toast(f"VISION TAKIP: ID {vision_track_target_id}", 2.0)
@@ -1799,18 +2196,17 @@ if __name__ == "__main__":
                 elif k == 't' and not auto_running:
                     toast("KILIT: Vision takipte otomatik")
 
-                elif k == 'k' and not auto_running:
-                    threading.Thread(target=do_flip, args=('f',), daemon=True).start()
-                    
-                elif k == 'l' and not auto_running:
-                    threading.Thread(target=do_flip, args=('b',), daemon=True).start()
-
                 elif k == 'b' and not auto_running:
                     # HEDEF DEGISTIR: Bir sonraki kisiye gec
                     with vision_lock:
                         _persons = list(vision_last_persons) if vision_last_persons else []
+                    _persons = sanitize_person_detections(_persons, ww, hh)
                     if mode == 1 and vision_track_active and _persons:
-                        ids = [p.get("id") for p in _persons]
+                        ids = [p.get("id") for p in _persons if p.get("id") is not None]
+                        ids = list(dict.fromkeys(ids))
+                        if not ids:
+                            toast("B: Gecerli hedef yok")
+                            continue
                         if vision_track_target_id in ids:
                             idx = ids.index(vision_track_target_id)
                             next_idx = (idx + 1) % len(ids)
@@ -1818,6 +2214,7 @@ if __name__ == "__main__":
                             next_idx = 0
                         vision_track_target_id = ids[next_idx]
                         vision_track_lost_t = None
+                        vision_track_last_switch_t = time.time()
                         toast(f"HEDEF: ID {vision_track_target_id} ({next_idx+1}/{len(ids)})", 1.5)
                     else:
                         toast("B: Once G ile takip baslat")
@@ -1835,7 +2232,7 @@ if __name__ == "__main__":
                     elif auto_running:
                         toast("Otonom zaten calisiyor")
     
-                elif k in ('o', 'ö'):
+                elif k in CANCEL_KEYS:
                     auto_cancel = True
                     roi_pending = False; roi_pending_bbox = None; roi_pending_frame = None
                     stop_and_hover()
@@ -1861,58 +2258,78 @@ if __name__ == "__main__":
     
             # --- VISION TABANLI TAKİP ---
             if mode == 1 and not emergency and not auto_running:
+                motion_scale = power_save_motion_scale(battery_level)
                 if vision_track_active and vision_enabled:
-                    # Vision sonuclarini thread-safe oku
-                    with vision_lock:
-                        _persons = list(vision_last_persons) if vision_last_persons else []
+                    try:
+                        # Vision sonuclarini thread-safe oku
+                        with vision_lock:
+                            _persons = list(vision_last_persons) if vision_last_persons else []
+                        _persons = sanitize_person_detections(_persons, ww, hh)
 
-                    tracked_person = None
-                    if _persons:
-                        if vision_track_target_id is not None:
-                            # 1. Oncelik: Ayni ID'li kisiyi bul (kilitli hedef)
-                            for p in _persons:
-                                if p.get("id") == vision_track_target_id:
-                                    tracked_person = p
-                                    break
-                            
-                            # 2. Oncelik: Eger ID bulunamadiysa tracker ID degistirmis olabilir!
-                            if tracked_person is None and vision_track_bbox is not None:
-                                old_cx = (vision_track_bbox[0] + vision_track_bbox[2]) / 2.0
-                                old_cy = (vision_track_bbox[1] + vision_track_bbox[3]) / 2.0
-                                
-                                best_dist = 999999.0
-                                best_match = None
-                                
-                                for p in _persons:
-                                    bb = p.get("bbox", (0,0,0,0))
-                                    pcx = (bb[0] + bb[2]) / 2.0
-                                    pcy = (bb[1] + bb[3]) / 2.0
-                                    dist = ((pcx - old_cx)**2 + (pcy - old_cy)**2)**0.5
-                                    if dist < best_dist:
-                                        best_dist = dist
-                                        best_match = p
+                        tracked_person = None
+                        next_target_id = vision_track_target_id
+                        danger_cancelled = False
 
-                                # Eger ekranda TEK KISI varsa VEYA en yakin kisi merkezden 150 pikselden daha yakinsa
-                                # (Kamera sallantisi toleransi icin IoU yerine mesafe kullanildi)
-                                if best_match is not None and (len(_persons) == 1 or best_dist < 150.0):
-                                    tracked_person = best_match
-                                    vision_track_target_id = tracked_person.get("id")
-                                    # toast("ID Guncellendi", 1.0)
-                        else:
-                            # Henuz hicbir kilit yoksa (araniyor modundaysa) en riskli kisiyi bul ve ona kilitlen
-                            best_risk = -1.0
-                            for p in _persons:
-                                p_risk = float(p.get("risk", 0.0))
-                                if p_risk > best_risk:
-                                    best_risk = p_risk
-                                    tracked_person = p
-                            if tracked_person is not None:
-                                vision_track_target_id = tracked_person.get("id")
-                                toast(f"KILITLENDI: ID {vision_track_target_id} R:{best_risk:.2f}", 1.5)
+                        if _persons:
+                            # Kilitliyken hedef ID kesinlikle sabit kalsin.
+                            if VISION_STICKY_LOCK and vision_track_target_id is not None:
+                                tracked_person = next(
+                                    (p for p in _persons if p.get("id") == vision_track_target_id),
+                                    None,
+                                )
+                                next_target_id = vision_track_target_id
+                            else:
+                                tracked_person, next_target_id = choose_tracked_person(
+                                    _persons,
+                                    vision_track_target_id,
+                                    vision_track_bbox,
+                                )
 
-                    if tracked_person is not None:
+                            # Kilitli kisiyi takip ederken diger kisilerde danger cikarsa kilidi hemen iptal et.
+                            danger_person = find_first_danger_person(_persons, ignore_id=vision_track_target_id)
+                            if danger_person is not None:
+                                now_danger = time.time()
+                                if DANGER_AUTO_SNAPSHOT and (now_danger - danger_snapshot_last_t) >= DANGER_SNAPSHOT_COOLDOWN_SEC:
+                                    save_photo(frame_disp.copy())
+                                    danger_snapshot_last_t = now_danger
+                                if (now_danger - danger_toast_last_t) >= DANGER_TOAST_COOLDOWN_SEC:
+                                    d_id = danger_person.get("id", "?")
+                                    toast(f"DANGER ID:{d_id} -> KILIT IPTAL", 1.5)
+                                    danger_toast_last_t = now_danger
+                                danger_cancelled = True
+                                mode = 0
+                                reset_tracking()
+                                stop_and_hover()
+                                lr = fb = ud = yv = 0
+
+                        if (not danger_cancelled) and tracked_person is not None and next_target_id != vision_track_target_id:
+                            now_switch = time.time()
+                            can_switch = (
+                                vision_track_target_id is None
+                                or (now_switch - vision_track_last_switch_t) >= VISION_TARGET_SWITCH_COOLDOWN_SEC
+                            )
+                            if can_switch:
+                                vision_track_target_id = next_target_id
+                                vision_track_last_switch_t = now_switch
+                                if vision_track_target_id is not None:
+                                    risk_txt = float(tracked_person.get("risk", 0.0))
+                                    toast(f"KILITLENDI: ID {vision_track_target_id} R:{risk_txt:.2f}", 1.2)
+                            else:
+                                tracked_person = None
+
+                    except Exception as track_exc:
+                        tracked_person = None
+                        danger_cancelled = False
+                        now_err = time.time()
+                        if (now_err - vision_track_last_error_t) >= VISION_TRACK_ERROR_COOLDOWN_SEC:
+                            vision_track_last_error_t = now_err
+                            toast(f"TAKIP HATA: {str(track_exc)[:48]}", 1.0)
+
+                    if danger_cancelled:
+                        tracked_person = None
+                    elif tracked_person is not None:
                         # HEDEF BULUNDU
-                        x1, y1, x2, y2 = map(int, tracked_person.get("bbox", (0,0,0,0)))
+                        x1, y1, x2, y2 = tracked_person.get("bbox", (0, 0, 0, 0))
                         bw = x2 - x1
                         bh = y2 - y1
                         cx = x1 + bw // 2
@@ -1933,42 +2350,63 @@ if __name__ == "__main__":
                                     (x1, max(22, y1 - 12)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.56, box_color, 2, cv2.LINE_AA)
 
-                        # YAW komutu (yatay takip)
-                        errx = cx - ww // 2
-                        if abs(errx) > DEAD_ZONE:
-                            yv_raw = errx * TRACK_GAIN_YAW * (TRACK_SPEED / 100.)
-                            yv = int(clamp(yv_raw, -MAX_YAW, MAX_YAW))
-                            if 0 < abs(yv) < MIN_CMD_YAW:
-                                yv = int(np.sign(yv) * MIN_CMD_YAW)
+                        status_upper = status_lbl.upper()
+                        # Etiket metni değişken olabileceği için ana karar kırmızı (danger) bayrağından verilir.
+                        track_allowed = (not is_danger) if TRACK_ONLY_SAFE_PERSON else True
 
-                        # UD komutu (dikey takip)
-                        erry = cy - hh // 2
-                        if abs(erry) > DEAD_ZONE:
-                            ud_raw = -erry * TRACK_GAIN_UD * (TRACK_SPEED / 100.)
-                            ud = int(clamp(ud_raw, -MAX_UD, MAX_UD))
-                            if 0 < abs(ud) < MIN_CMD_UD:
-                                ud = int(np.sign(ud) * MIN_CMD_UD)
+                        if track_allowed:
+                            # YAW komutu (yatay takip)
+                            errx = cx - ww // 2
+                            if abs(errx) > DEAD_ZONE:
+                                yv_raw = errx * TRACK_GAIN_YAW * (TRACK_SPEED / 100.)
+                                yv = int(clamp(yv_raw, -MAX_YAW, MAX_YAW))
+                                if 0 < abs(yv) < MIN_CMD_YAW:
+                                    yv = int(np.sign(yv) * MIN_CMD_YAW)
 
-                        # FB komutu (mesafe koruma)
-                        if fb_active and time.time() > fb_enable_time and dist_target_w is not None:
-                            w_now = max(1., float(bw))
-                            tw = float(dist_target_w)
-                            band_lo = tw * (1. - FB_BAND)
-                            band_hi = tw * (1. + FB_BAND)
-                            if w_now < tw * FB_MIN_W:
-                                target_fb = +FB_MAX_FWD
-                            elif w_now > tw * FB_MAX_W:
-                                target_fb = -FB_MAX_BWD
-                            elif band_lo <= w_now <= band_hi:
-                                target_fb = 0
-                            elif w_now < band_lo:
-                                target_fb = int(clamp((band_lo - w_now) / band_lo * FB_MAX_FWD, FB_MIN_STEP, FB_MAX_FWD))
+                            # UD komutu (dikey takip)
+                            erry = cy - hh // 2
+                            if abs(erry) > DEAD_ZONE:
+                                ud_raw = -erry * TRACK_GAIN_UD * (TRACK_SPEED / 100.)
+                                ud = int(clamp(ud_raw, -MAX_UD, MAX_UD))
+                                if 0 < abs(ud) < MIN_CMD_UD:
+                                    ud = int(np.sign(ud) * MIN_CMD_UD)
+
+                            # FB komutu (mesafe koruma)
+                            if fb_active and time.time() > fb_enable_time and dist_target_w is not None:
+                                w_now = max(1., float(bw))
+                                tw = float(dist_target_w)
+                                band_lo = tw * (1. - FB_BAND)
+                                band_hi = tw * (1. + FB_BAND)
+                                if w_now < tw * FB_MIN_W:
+                                    target_fb = +FB_MAX_FWD
+                                elif w_now > tw * FB_MAX_W:
+                                    target_fb = -FB_MAX_BWD
+                                elif band_lo <= w_now <= band_hi:
+                                    target_fb = 0
+                                elif w_now < band_lo:
+                                    target_fb = int(clamp((band_lo - w_now) / band_lo * FB_MAX_FWD, FB_MIN_STEP, FB_MAX_FWD))
+                                else:
+                                    target_fb = -int(clamp((w_now - band_hi) / band_hi * FB_MAX_BWD, FB_MIN_STEP, FB_MAX_BWD))
+                                fb_prev_cmd += int(clamp(target_fb - fb_prev_cmd, -FB_SLEW, FB_SLEW))
+                                fb = int(fb_prev_cmd)
                             else:
-                                target_fb = -int(clamp((w_now - band_hi) / band_hi * FB_MAX_BWD, FB_MIN_STEP, FB_MAX_BWD))
-                            fb_prev_cmd += int(clamp(target_fb - fb_prev_cmd, -FB_SLEW, FB_SLEW))
-                            fb = int(fb_prev_cmd)
+                                fb = 0; fb_prev_cmd = 0
+
+                            if motion_scale < 0.999:
+                                yv = scale_axis_cmd(yv, motion_scale)
+                                ud = scale_axis_cmd(ud, motion_scale)
+                                fb = scale_axis_cmd(fb, motion_scale)
                         else:
-                            fb = 0; fb_prev_cmd = 0
+                            if DANGER_HOLD_ON_TRACK:
+                                lr = fb = ud = yv = 0
+                                fb_prev_cmd = 0
+                            now_danger = time.time()
+                            if DANGER_AUTO_SNAPSHOT and (now_danger - danger_snapshot_last_t) >= DANGER_SNAPSHOT_COOLDOWN_SEC:
+                                save_photo(frame_disp.copy())
+                                danger_snapshot_last_t = now_danger
+                            if (now_danger - danger_toast_last_t) >= DANGER_TOAST_COOLDOWN_SEC:
+                                toast("KIRMIZI HEDEF: takip beklemede", 1.0)
+                                danger_toast_last_t = now_danger
 
                     else:
                         # HEDEF KAYIP
@@ -1981,21 +2419,38 @@ if __name__ == "__main__":
                             direction = 1 if (int(elapsed * 10) // SEARCH_TOGGLE_EVERY) % 2 == 0 else -1
                             yv = int(direction * SEARCH_YAW)
                         elif elapsed >= VISION_TRACK_LOST_SEC:
-                            toast(f"{int(VISION_TRACK_LOST_SEC)}sn gecti -> MANUEL", 2.0)
-                            mode = 0; reset_tracking(); stop_and_hover()
+                            # Kilitli hedef gecici kayipta mode dusmesin, ayni ID beklenmeye devam etsin.
+                            if VISION_STICKY_LOCK and VISION_LOCK_PERSIST_ON_OCCLUSION and vision_track_target_id is not None:
+                                if elapsed < VISION_REACQ_KEEP_SEC and safe_is_flying():
+                                    direction = 1 if (int(elapsed * 6) // SEARCH_TOGGLE_EVERY) % 2 == 0 else -1
+                                    yv = int(direction * max(8, int(SEARCH_YAW * 0.75)))
+                                else:
+                                    lr = fb = ud = yv = 0
+                                if (time.time() - vision_track_wait_toast_t) >= 2.0:
+                                    toast(f"HEDEF BEKLENIYOR ID:{vision_track_target_id}", 1.0)
+                                    vision_track_wait_toast_t = time.time()
+                            else:
+                                toast(f"{int(VISION_TRACK_LOST_SEC)}sn gecti -> MANUEL", 2.0)
+                                mode = 0; reset_tracking(); stop_and_hover()
                 else:
                     mode = 0; reset_tracking()
     
             # --- MANUEL ---
             elif mode == 0 and not emergency and not auto_running:
-                if key_down('w'): fb =  MAX_SPEED
-                if key_down('s'): fb = -MAX_SPEED
-                if key_down('a'): lr = -MAX_SPEED
-                if key_down('d'): lr =  MAX_SPEED
-                if key_down('q'): yv = -MAX_SPEED
-                if key_down('e'): yv =  MAX_SPEED
-                if key_down('z'): ud =  MAX_SPEED
-                if key_down('x'): ud = -MAX_SPEED
+                axis_speed = manual_axis_speed_from_battery(battery_level)
+                if key_down('w'): fb =  axis_speed
+                if key_down('s'): fb = -axis_speed
+                if key_down('a'): lr = -axis_speed
+                if key_down('d'): lr =  axis_speed
+                if key_down('q'): yv = -axis_speed
+                if key_down('e'): yv =  axis_speed
+                if key_down('z'): ud =  axis_speed
+                if key_down('x'): ud = -axis_speed
+
+                manual_input_active = any((lr, fb, ud, yv))
+                hover_ud = compute_manual_hover_ud(now, manual_input_active)
+                if (not manual_input_active) and hover_ud != 0:
+                    ud = int(hover_ud)
     
             # --- RC GONDER ---
             if emergency or auto_running:
@@ -2187,3 +2642,4 @@ if __name__ == "__main__":
         try: run_sdk_command(tello.streamoff)
         except: pass
         cv2.destroyAllWindows()
+

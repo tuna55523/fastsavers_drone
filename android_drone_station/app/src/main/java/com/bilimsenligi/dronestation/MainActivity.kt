@@ -113,25 +113,26 @@ class MainActivity : AppCompatActivity(),
     private val reconnectStateTimeoutMs = 8500L
     private val maxReconnectAttempts = 6
     private val trackingSampleStaleMs = 900L
-<<<<<<< HEAD
-    private val touchStrafeMax = 42
-    private val touchForwardBackMax = 62
-    private val touchUpDownRate = 42
-    private val touchYawRate = 28
-    private val rcNeutralDeadband = 3
-    private val rcSlewStep = 8
-=======
     // Son-gun guvenli profil: panel komutlarini daha kontrollu yap.
     private val touchStrafeMax = 28
     private val touchForwardBackMax = 40
     private val touchUpDownRate = 24
     private val touchYawRate = 22
+    private val touchAxisDeadzone = 0.10f
+    private val touchAxisExpoLr = 1.35
+    private val touchAxisExpoFb = 1.30
+    private val rcNeutralDeadband = 3
     // 50ms RC tikinde eksen basina maksimum degisim adimi.
     private val rcSlewLrStep = 6
     private val rcSlewFbStep = 7
     private val rcSlewUdStep = 5
     private val rcSlewYawStep = 5
->>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
+    // Hedef sifira inerken daha hizli frenleyip drift'i azalt.
+    private val rcStopLrStep = 12
+    private val rcStopFbStep = 14
+    private val rcStopUdStep = 10
+    private val rcStopYawStep = 10
+    private val rcZeroSnapThreshold = 2
 
     @Volatile
     private var isAirborne = false
@@ -162,9 +163,6 @@ class MainActivity : AppCompatActivity(),
 
     @Volatile
     private var touchYaw = 0
-
-    @Volatile
-    private var lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
 
     @Volatile
     private var latestBatteryPercent: Int? = null
@@ -375,7 +373,6 @@ class MainActivity : AppCompatActivity(),
     override fun onPause() {
         super.onPause()
         gamepadMapper.reset()
-        lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
         resetTouchManual()
         lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
     }
@@ -526,7 +523,6 @@ class MainActivity : AppCompatActivity(),
             telloVideo.stop()
             telloClient.disconnect()
             gamepadMapper.reset()
-            lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
             isAirborne = false
             isVideoRecording = false
             staleStrikeCount = 0
@@ -592,7 +588,7 @@ class MainActivity : AppCompatActivity(),
     private fun toggleTrackingMode() {
         val enabled = trackingManager.toggle()
         latestTrackingSample = null
-        lastRcCommand = GamepadMapper.RcCommand(0, 0, 0, 0)
+        lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
         postCommandText(if (enabled) "Takip baslatildi" else "Takip durduruldu")
         updateTrackingUi()
     }
@@ -627,12 +623,8 @@ class MainActivity : AppCompatActivity(),
                         lastSentRc = GamepadMapper.RcCommand(0, 0, 0, 0)
                         return@scheduleAtFixedRate
                     }
-<<<<<<< HEAD
-                    telloClient.sendRcControl(rc.leftRight, rc.forwardBack, rc.upDown, rc.yaw)
-=======
-                    val smooth = applyRcSlew(mixed)
+                    val smooth = applyRcSlew(rc)
                     telloClient.sendRcControl(smooth.leftRight, smooth.forwardBack, smooth.upDown, smooth.yaw)
->>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
                 } catch (_: Exception) {
                 }
             },
@@ -1036,9 +1028,8 @@ class MainActivity : AppCompatActivity(),
                 }
 
                 activeTouchJoystickId = sourceId
-                val deadzone = 0.08f
-                val x = if (kotlin.math.abs(nx) < deadzone) 0f else nx
-                val y = if (kotlin.math.abs(ny) < deadzone) 0f else ny
+                val x = shapeTouchAxis(nx, deadzone = touchAxisDeadzone, exponent = touchAxisExpoLr)
+                val y = shapeTouchAxis(ny, deadzone = touchAxisDeadzone, exponent = touchAxisExpoFb)
 
                 touchLr = (x * touchStrafeMax).toInt().coerceIn(-100, 100)
                 touchFb = (-y * touchForwardBackMax).toInt().coerceIn(-100, 100)
@@ -1111,51 +1102,54 @@ class MainActivity : AppCompatActivity(),
         )
     }
 
-<<<<<<< HEAD
     private fun stabilizeRcCommand(command: GamepadMapper.RcCommand): GamepadMapper.RcCommand {
         fun deadband(value: Int): Int = if (kotlin.math.abs(value) <= rcNeutralDeadband) 0 else value
-        fun slew(previous: Int, target: Int): Int {
-            val delta = (target - previous).coerceIn(-rcSlewStep, rcSlewStep)
-            val next = previous + delta
-            return if (target == 0 && kotlin.math.abs(next) <= rcSlewStep) 0 else next
-        }
-
-        val target = GamepadMapper.RcCommand(
+        return GamepadMapper.RcCommand(
             leftRight = deadband(command.leftRight),
             forwardBack = deadband(command.forwardBack),
             upDown = deadband(command.upDown),
             yaw = deadband(command.yaw),
         )
+    }
 
-        val smoothed = GamepadMapper.RcCommand(
-            leftRight = slew(lastRcCommand.leftRight, target.leftRight),
-            forwardBack = slew(lastRcCommand.forwardBack, target.forwardBack),
-            upDown = slew(lastRcCommand.upDown, target.upDown),
-            yaw = slew(lastRcCommand.yaw, target.yaw),
-        )
-        lastRcCommand = smoothed
-        return smoothed
-=======
     private fun applyRcSlew(target: GamepadMapper.RcCommand): GamepadMapper.RcCommand {
         val prev = lastSentRc
         val next = GamepadMapper.RcCommand(
-            leftRight = slewAxis(prev.leftRight, target.leftRight, rcSlewLrStep),
-            forwardBack = slewAxis(prev.forwardBack, target.forwardBack, rcSlewFbStep),
-            upDown = slewAxis(prev.upDown, target.upDown, rcSlewUdStep),
-            yaw = slewAxis(prev.yaw, target.yaw, rcSlewYawStep),
+            leftRight = slewAxis(prev.leftRight, target.leftRight, rcSlewLrStep, rcStopLrStep),
+            forwardBack = slewAxis(prev.forwardBack, target.forwardBack, rcSlewFbStep, rcStopFbStep),
+            upDown = slewAxis(prev.upDown, target.upDown, rcSlewUdStep, rcStopUdStep),
+            yaw = slewAxis(prev.yaw, target.yaw, rcSlewYawStep, rcStopYawStep),
         )
         lastSentRc = next
         return next
     }
 
-    private fun slewAxis(previous: Int, target: Int, step: Int): Int {
+    private fun slewAxis(previous: Int, target: Int, step: Int, stopStep: Int): Int {
         val safeStep = step.coerceAtLeast(1)
+        val safeStopStep = stopStep.coerceAtLeast(safeStep)
+        if (target == 0) {
+            val next = when {
+                previous > safeStopStep -> previous - safeStopStep
+                previous < -safeStopStep -> previous + safeStopStep
+                else -> 0
+            }
+            return if (kotlin.math.abs(next) <= rcZeroSnapThreshold) 0 else next
+        }
         return when {
             target > previous + safeStep -> previous + safeStep
             target < previous - safeStep -> previous - safeStep
             else -> target
         }.coerceIn(-100, 100)
->>>>>>> 3364bd317ce1848cb9738406d856bd60f04d06c2
+    }
+
+    private fun shapeTouchAxis(value: Float, deadzone: Float, exponent: Double): Float {
+        val clamped = value.coerceIn(-1f, 1f)
+        val magnitude = kotlin.math.abs(clamped)
+        if (magnitude <= deadzone) return 0f
+
+        val normalized = ((magnitude - deadzone) / (1f - deadzone)).coerceIn(0f, 1f)
+        val curved = Math.pow(normalized.toDouble(), exponent).toFloat()
+        return if (clamped >= 0f) curved else -curved
     }
 
     private fun resetTouchManual() {

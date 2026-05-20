@@ -2,6 +2,7 @@
 # pylint: disable=no-member
 import os
 import sys
+import json
 import time
 import threading
 import importlib
@@ -11,6 +12,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+CALIBRATION_FILE = os.path.join(CURRENT_DIR, "motion_calibration.json")
 
 import cv2  # pyright: ignore[reportMissingImports]
 import numpy as np  # pyright: ignore[reportMissingImports]
@@ -31,18 +33,23 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 DISPLAY_W = 1280 
 DISPLAY_H = 720
-TARGET_FPS = 60
+TARGET_FPS = 45
 FRAME_TIME = 1.0 / TARGET_FPS
 
-MAX_SPEED = 100  # manuel rc_control icin
+MAX_SPEED = 72  # manuel rc_control icin (batarya dostu)
 FLIP_COOLDOWN_SEC = 1.5
+FLIP_MIN_BATTERY = 50
+FLIP_READY_HEIGHT_CM = 85
+FLIP_READY_TOL_CM = 8
+FLIP_CLIMB_SPEED = 35
+FLIP_CLIMB_TIMEOUT_SEC = 4.0
 
 # =========================================================
 # OTONOM HIZ AYARLARI (rc_control tabanli)
 # =========================================================
 # Drone cm/s olarak hareket eder, biz sure ile mesafeyi kontrol ederiz
 # move_forward(200) yerine: rc ile ~2.0 sn boyunca 60 cm/s ileri
-AUTO_FWD_SPEED = 60   # cm/s ileri hiz (rc_control scale: 0-100)
+AUTO_FWD_SPEED = 52   # cm/s ileri hiz (rc_control scale: 0-100)
 AUTO_YAW_SPEED = 40   # donme hizi (rc_control scale)
 AUTO_HOME_CORR_SPEED = 35
 AUTO_DOCK_SPEED = 12
@@ -57,6 +64,12 @@ DIST_100_SEC = 1.7    # 1m icin sure (sn) - gerekte ayarla
 DIST_200_SEC = 3.4    # 2m icin sure (sn) - gerekte ayarla
 DIST_300_SEC = 5.1    # 3m icin sure (sn) - gerekte ayarla
 ROT_90_SEC   = 2.3    # 90 derece donme suresi (sn) - gerekte ayarla
+CALIBRATION_FORWARD_SAMPLE_SEC = 1.4
+CALIBRATION_YAW_SAMPLE_SEC = 1.4
+CALIBRATION_MIN_FORWARD_CM = 25.0
+CALIBRATION_MAX_FORWARD_CM = 220.0
+CALIBRATION_MIN_YAW_DEG = 25.0
+CALIBRATION_MAX_YAW_DEG = 180.0
 AUTO_STEP_HOVER_SEC = 0.6
 AUTO_FINAL_HOVER_SEC = 1.4
 AUTO_HOME_TOL_CM = 35.0
@@ -66,30 +79,144 @@ AUTO_ALT_CORR_SPEED = 20
 AUTO_PAD_SCAN_SEC = 2.5
 AUTO_DOCK_APPROACH_Z_CM = 45
 AUTO_DOCK_FINAL_Z_CM = 22
-TAKEOFF_READY_HEIGHT_CM = 28
-TAKEOFF_WAIT_SEC = 6.0
-MANUAL_TAKEOFF_HOVER_CM = 28
+TAKEOFF_READY_HEIGHT_CM = 70
+TAKEOFF_WAIT_SEC = 7.0
+TAKEOFF_STABLE_SAMPLE_SEC = 1.25
+TAKEOFF_STABLE_TOL_CM = 8.0
+MANUAL_TAKEOFF_HOVER_CM = 75
 MANUAL_TAKEOFF_TOL_CM = 7
 MANUAL_TAKEOFF_MAX_DESCEND_CM = 70
 AUTO_MIN_BATTERY = 25
-BATTERY_POLL_SEC = 1.5
+BATTERY_POLL_SEC = 5.0
+MANUAL_SPEED_LIMIT_CM_S = 55
+
+# Manuel modda havada beklerken irtifa tutma
+HOVER_HOLD_ENABLED = True
+HOVER_HOLD_IDLE_DELAY_SEC = 0.28
+HOVER_HOLD_SAMPLE_SEC = 0.20
+HOVER_HOLD_DEADBAND_CM = 7.0
+HOVER_HOLD_GAIN = 1.7
+HOVER_HOLD_MIN_UD = 10
+HOVER_HOLD_MAX_UD = 22
+
+# Takla sonrasi toparlama
+FLIP_RECOVER_SEC = 1.5
+FLIP_RECOVER_DEADBAND_CM = 5.0
+FLIP_RECOVER_GAIN = 2.1
+FLIP_RECOVER_MAX_UD = 26
+
+# Pil tasarrufu (dinamik)
+POWER_SAVE_ENABLED = True
+POWER_SAVE_BAT_MID = 35
+POWER_SAVE_BAT_LOW = 25
+POWER_SAVE_BAT_CRIT = 17
+POWER_SAVE_SCALE_MID = 0.92
+POWER_SAVE_SCALE_LOW = 0.84
+POWER_SAVE_SCALE_CRIT = 0.74
 
 # =========================================================
 # GORUNTU ISLEME
 # =========================================================
 VISION_AUTO_ENABLE = True
-VISION_UPDATE_INTERVAL_SEC = 0.35
+VISION_UPDATE_INTERVAL_SEC = 0.40
 VISION_RESULT_TTL_SEC = 1.2
 
-AUTO_ROUTE_STEPS = [
-    ("forward",   "1m ileri", AUTO_FWD_SPEED, DIST_100_SEC),
-    ("yaw_right", "Saga don", AUTO_YAW_SPEED, ROT_90_SEC),
-    ("forward",   "1m ileri", AUTO_FWD_SPEED, DIST_100_SEC),
-    ("yaw_right", "Saga don", AUTO_YAW_SPEED, ROT_90_SEC),
-    ("forward",   "1m ileri", AUTO_FWD_SPEED, DIST_100_SEC),
-    ("yaw_right", "Saga don", AUTO_YAW_SPEED, ROT_90_SEC),
-    ("forward",   "1m ileri", AUTO_FWD_SPEED, DIST_100_SEC),
-]
+def calibrated_forward_cm_per_sec():
+    return 100.0 / max(0.1, float(DIST_100_SEC))
+
+
+def calibrated_yaw_deg_per_sec():
+    return 90.0 / max(0.1, float(ROT_90_SEC))
+
+
+def linear_cmd_to_cm_per_sec(speed_cmd):
+    speed_ratio = abs(float(speed_cmd)) / max(1.0, float(AUTO_FWD_SPEED))
+    return max(1.0, calibrated_forward_cm_per_sec() * speed_ratio)
+
+
+def linear_cm_to_duration(distance_cm, speed_cmd):
+    return max(0.35, float(abs(distance_cm)) / linear_cmd_to_cm_per_sec(speed_cmd))
+
+
+def linear_distance_for_duration(speed_cmd, duration_sec):
+    return linear_cmd_to_cm_per_sec(speed_cmd) * float(duration_sec)
+
+
+def yaw_degrees_to_duration(degrees):
+    return max(0.35, float(abs(degrees)) / calibrated_yaw_deg_per_sec())
+
+
+def rebuild_auto_route_steps():
+    return [
+        ("forward",   "1m ileri", AUTO_FWD_SPEED, linear_cm_to_duration(100.0, AUTO_FWD_SPEED)),
+        ("yaw_right", "Saga don", AUTO_YAW_SPEED, yaw_degrees_to_duration(90.0)),
+        ("forward",   "1m ileri", AUTO_FWD_SPEED, linear_cm_to_duration(100.0, AUTO_FWD_SPEED)),
+        ("yaw_right", "Saga don", AUTO_YAW_SPEED, yaw_degrees_to_duration(90.0)),
+        ("forward",   "1m ileri", AUTO_FWD_SPEED, linear_cm_to_duration(100.0, AUTO_FWD_SPEED)),
+        ("yaw_right", "Saga don", AUTO_YAW_SPEED, yaw_degrees_to_duration(90.0)),
+        ("forward",   "1m ileri", AUTO_FWD_SPEED, linear_cm_to_duration(100.0, AUTO_FWD_SPEED)),
+    ]
+
+
+def _parse_positive_float(value, default=None):
+    try:
+        number = float(value)
+    except Exception:
+        return default
+    if not np.isfinite(number) or number <= 0:
+        return default
+    return float(number)
+
+
+def load_motion_calibration():
+    global DIST_100_SEC, DIST_200_SEC, DIST_300_SEC, ROT_90_SEC
+    if not os.path.exists(CALIBRATION_FILE):
+        return False
+    try:
+        with open(CALIBRATION_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"[CALIBRATION] Okuma hatasi: {exc}")
+        return False
+
+    forward_cmps = _parse_positive_float(data.get("forward_cm_per_sec"))
+    yaw_dps = _parse_positive_float(data.get("yaw_deg_per_sec"))
+
+    if forward_cmps is not None:
+        DIST_100_SEC = 100.0 / forward_cmps
+        DIST_200_SEC = 200.0 / forward_cmps
+        DIST_300_SEC = 300.0 / forward_cmps
+    if yaw_dps is not None:
+        ROT_90_SEC = 90.0 / yaw_dps
+
+    print(
+        "[CALIBRATION] Yuklendi: "
+        f"1m={DIST_100_SEC:.2f}s, 90deg={ROT_90_SEC:.2f}s"
+    )
+    return True
+
+
+def save_motion_calibration(forward_cmps=None, yaw_dps=None):
+    if forward_cmps is None:
+        forward_cmps = calibrated_forward_cm_per_sec()
+    if yaw_dps is None:
+        yaw_dps = calibrated_yaw_deg_per_sec()
+    payload = {
+        "forward_cm_per_sec": round(float(forward_cmps), 3),
+        "yaw_deg_per_sec": round(float(yaw_dps), 3),
+        "dist_100_sec": round(100.0 / max(1.0, float(forward_cmps)), 3),
+        "rot_90_sec": round(90.0 / max(1.0, float(yaw_dps)), 3),
+        "auto_fwd_speed_cmd": AUTO_FWD_SPEED,
+        "auto_yaw_speed_cmd": AUTO_YAW_SPEED,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with open(CALIBRATION_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    return payload
+
+
+load_motion_calibration()
+AUTO_ROUTE_STEPS = rebuild_auto_route_steps()
 
 # =========================================================
 # TAKİP PARAMETRELERİ
@@ -238,7 +365,7 @@ def dedupe_key_events(events):
 
 
 def key_down(k: str) -> bool:
-    if auto_running or emergency or takeoff_busy:
+    if auto_running or emergency or takeoff_busy or calibration_busy:
         return False
     return k in pressed
 
@@ -400,7 +527,7 @@ def compute_route_preview_points(route_steps):
     yaw = 0.0
     pts = [(x, y)]
     for action, _, speed, duration_sec in route_steps:
-        distance_cm = float(abs(speed) * duration_sec)
+        distance_cm = linear_distance_for_duration(speed, duration_sec)
         yaw_rad = np.deg2rad(yaw)
         fwd_x = np.cos(yaw_rad)
         fwd_y = np.sin(yaw_rad)
@@ -661,6 +788,40 @@ def safe_get_battery(default=-1):
     except: return int(default)
 
 
+def power_save_motion_scale(bat_value):
+    if not POWER_SAVE_ENABLED:
+        return 1.0
+    try:
+        bat = int(bat_value)
+    except Exception:
+        return 1.0
+    if bat < 0:
+        return 1.0
+    if bat <= POWER_SAVE_BAT_CRIT:
+        return POWER_SAVE_SCALE_CRIT
+    if bat <= POWER_SAVE_BAT_LOW:
+        return POWER_SAVE_SCALE_LOW
+    if bat <= POWER_SAVE_BAT_MID:
+        return POWER_SAVE_SCALE_MID
+    return 1.0
+
+
+def scale_axis_cmd(cmd, scale, min_abs=0):
+    if cmd == 0 or scale >= 0.999:
+        return int(cmd)
+    scaled = int(round(float(cmd) * float(scale)))
+    if scaled == 0:
+        scaled = 1 if cmd > 0 else -1
+    if min_abs > 0 and abs(scaled) < min_abs:
+        scaled = int(np.sign(scaled) * min_abs)
+    return int(clamp(scaled, -100, 100))
+
+
+def manual_axis_speed_from_battery(bat_value):
+    scale = power_save_motion_scale(bat_value)
+    return max(45, int(round(MAX_SPEED * scale)))
+
+
 def stop_and_hover():
     send_rc_control_safe(0, 0, 0, 0, reason="hover_stop", report_fail=False, report_success=False)
 
@@ -711,18 +872,36 @@ def fast_takeoff(wait_sec=TAKEOFF_WAIT_SEC, min_height_cm=TAKEOFF_READY_HEIGHT_C
         return True
 
     t0 = time.time()
+    last_h = 0.0
+    stable_since = None
     while time.time() - t0 < wait_sec:
         if emergency:
             return False
         h = safe_get_height_cm(0.0)
-        if h >= min_height_cm or safe_is_flying():
+        if h > 0:
+            if last_h > 0 and abs(h - last_h) <= TAKEOFF_STABLE_TOL_CM:
+                stable_since = stable_since or time.time()
+            else:
+                stable_since = None
+            last_h = h
+        if h >= min_height_cm:
             try:
                 tello.is_flying = True
             except Exception:
                 pass
             return True
+        if safe_is_flying() and h >= max(45.0, min_height_cm * 0.70) and stable_since is not None:
+            if time.time() - stable_since >= 0.65:
+                return True
         time.sleep(0.08)
-    return safe_is_flying() or safe_get_height_cm(0.0) >= max(18.0, min_height_cm * 0.65)
+    final_h = safe_get_height_cm(0.0)
+    ok = safe_is_flying() or final_h >= max(18.0, min_height_cm * 0.65)
+    if ok:
+        try:
+            tello.is_flying = True
+        except Exception:
+            pass
+    return ok
 
 
 def settle_manual_takeoff_height(
@@ -768,6 +947,181 @@ def settle_manual_takeoff_height(
     return current_h <= (target_height_cm + tolerance_cm + 4.0)
 
 
+def reset_hover_hold_target(preferred_height_cm=MANUAL_TAKEOFF_HOVER_CM):
+    global hover_target_height_cm, hover_idle_since_t, hover_last_sample_t
+    if safe_is_flying():
+        measured = safe_get_height_cm(float(preferred_height_cm))
+        if measured > 0:
+            hover_target_height_cm = float(measured)
+        else:
+            hover_target_height_cm = float(preferred_height_cm)
+    else:
+        hover_target_height_cm = None
+    hover_idle_since_t = time.time()
+    hover_last_sample_t = 0.0
+
+
+def calibrate_hover_target_from_current(sample_sec=TAKEOFF_STABLE_SAMPLE_SEC, fallback_height_cm=MANUAL_TAKEOFF_HOVER_CM):
+    global hover_target_height_cm, hover_idle_since_t, hover_last_sample_t
+    if not safe_is_flying():
+        hover_target_height_cm = None
+        return 0.0
+
+    samples = []
+    deadline = time.time() + max(0.25, float(sample_sec))
+    while time.time() < deadline:
+        if emergency or not safe_is_flying():
+            break
+        stop_and_hover()
+        h = safe_get_height_cm(0.0)
+        if h > 0:
+            samples.append(float(h))
+        time.sleep(0.10)
+
+    if samples:
+        target = float(np.median(np.array(samples, dtype=np.float32)))
+    else:
+        target = float(fallback_height_cm)
+
+    if target <= 0:
+        target = float(MANUAL_TAKEOFF_HOVER_CM)
+
+    hover_target_height_cm = target
+    hover_idle_since_t = time.time()
+    hover_last_sample_t = 0.0
+    stop_and_hover()
+    return target
+
+
+def compute_manual_hover_ud(now, manual_input_active):
+    global hover_target_height_cm, hover_idle_since_t, hover_last_sample_t
+
+    if (
+        not HOVER_HOLD_ENABLED
+        or emergency
+        or auto_running
+        or mode != 0
+        or (not safe_is_flying())
+    ):
+        hover_target_height_cm = None
+        hover_idle_since_t = now
+        return 0
+
+    if takeoff_busy or calibration_busy:
+        hover_idle_since_t = now
+        return 0
+
+    sample_due = (now - hover_last_sample_t) >= HOVER_HOLD_SAMPLE_SEC
+    if manual_input_active:
+        hover_idle_since_t = now
+        if sample_due:
+            hover_last_sample_t = now
+            current_h = safe_get_height_cm(0.0)
+            if current_h > 0:
+                if hover_target_height_cm is None:
+                    hover_target_height_cm = float(current_h)
+                else:
+                    # Kullanici yukseklik verdikce hedefi yumusak guncelle
+                    hover_target_height_cm = (hover_target_height_cm * 0.86) + (float(current_h) * 0.14)
+        return 0
+
+    if now - hover_idle_since_t < HOVER_HOLD_IDLE_DELAY_SEC:
+        return 0
+    if not sample_due:
+        return 0
+
+    hover_last_sample_t = now
+    default_h = MANUAL_TAKEOFF_HOVER_CM if hover_target_height_cm is None else hover_target_height_cm
+    current_h = safe_get_height_cm(default_h)
+    if current_h <= 0:
+        return 0
+
+    if hover_target_height_cm is None:
+        hover_target_height_cm = float(current_h)
+        return 0
+
+    delta_h = float(hover_target_height_cm - current_h)
+    if abs(delta_h) <= HOVER_HOLD_DEADBAND_CM:
+        return 0
+
+    ud_cmd = int(clamp(delta_h * HOVER_HOLD_GAIN, -HOVER_HOLD_MAX_UD, HOVER_HOLD_MAX_UD))
+    if 0 < abs(ud_cmd) < HOVER_HOLD_MIN_UD:
+        ud_cmd = int(np.sign(ud_cmd) * HOVER_HOLD_MIN_UD)
+    return int(ud_cmd)
+
+
+def stabilize_after_flip(reference_height_cm):
+    if not safe_is_flying():
+        return
+
+    try:
+        ref_height = float(reference_height_cm)
+    except Exception:
+        ref_height = 0.0
+    if ref_height <= 0:
+        ref_height = safe_get_height_cm(MANUAL_TAKEOFF_HOVER_CM)
+
+    deadline = time.time() + FLIP_RECOVER_SEC
+    while time.time() < deadline:
+        if emergency or auto_running or not safe_is_flying():
+            break
+        current_h = safe_get_height_cm(ref_height)
+        delta_h = ref_height - current_h
+        ud_cmd = 0
+        if abs(delta_h) > FLIP_RECOVER_DEADBAND_CM:
+            ud_cmd = int(clamp(delta_h * FLIP_RECOVER_GAIN, -FLIP_RECOVER_MAX_UD, FLIP_RECOVER_MAX_UD))
+            if 0 < abs(ud_cmd) < HOVER_HOLD_MIN_UD:
+                ud_cmd = int(np.sign(ud_cmd) * HOVER_HOLD_MIN_UD)
+        send_rc_control_safe(0, 0, ud_cmd, 0, reason="flip_recover", report_fail=False, report_success=False)
+        time.sleep(0.07)
+    stop_and_hover()
+    calibrated_h = calibrate_hover_target_from_current(0.9, ref_height)
+    if calibrated_h > 0:
+        toast(f"Takla sonrasi denge {int(round(calibrated_h))}cm", 1.4)
+
+
+def ensure_flip_ready_height(min_height_cm=FLIP_READY_HEIGHT_CM):
+    if not safe_is_flying():
+        return 0.0
+
+    current_h = safe_get_height_cm(0.0)
+    if current_h <= 0:
+        toast("Takla iptal: yukseklik okunamadi", 1.8)
+        return 0.0
+
+    if current_h >= (min_height_cm - FLIP_READY_TOL_CM):
+        return float(current_h)
+
+    toast(f"Takla icin yukseliyor: {int(current_h)}->{int(min_height_cm)}cm", 1.4)
+    climb_cm = int(clamp(round(min_height_cm - current_h), 20, 100))
+    try:
+        run_sdk_command(lambda: tello.move_up(climb_cm))
+        time.sleep(0.25)
+        stop_and_hover()
+    except Exception:
+        deadline = time.time() + FLIP_CLIMB_TIMEOUT_SEC
+        last_sample_t = 0.0
+        while time.time() < deadline:
+            if emergency or auto_running or not safe_is_flying():
+                break
+            now = time.time()
+            if now - last_sample_t >= 0.18:
+                current_h = safe_get_height_cm(current_h)
+                last_sample_t = now
+                if current_h >= (min_height_cm - FLIP_READY_TOL_CM):
+                    break
+            if not send_rc_control_safe(0, 0, FLIP_CLIMB_SPEED, 0, reason="flip_climb"):
+                break
+            time.sleep(0.07)
+        stop_and_hover()
+
+    current_h = safe_get_height_cm(current_h)
+    if current_h < (min_height_cm - FLIP_READY_TOL_CM):
+        toast(f"Takla iptal: yukseklik {int(current_h)}cm", 1.8)
+        return 0.0
+    return float(current_h)
+
+
 def force_sdk_speed_max():
     if (
         globals().get("auto_running", False)
@@ -777,9 +1131,9 @@ def force_sdk_speed_max():
     ):
         return False
     for fn in [
-        lambda: tello.set_speed(100),
-        lambda: tello.send_command_without_return("speed 100"),
-        lambda: tello.send_command_with_return("speed 100", timeout=2),
+        lambda: tello.set_speed(MANUAL_SPEED_LIMIT_CM_S),
+        lambda: tello.send_command_without_return(f"speed {MANUAL_SPEED_LIMIT_CM_S}"),
+        lambda: tello.send_command_with_return(f"speed {MANUAL_SPEED_LIMIT_CM_S}", timeout=2),
     ]:
         try: run_sdk_command(fn); return True
         except: pass
@@ -824,11 +1178,15 @@ auto_running    = False
 auto_cancel     = False
 auto_step_label = ""   # Hangi adımda olduğunu gösterir
 
+calibration_busy = False
 fps_smooth = 0.0
 FPS_ALPHA  = 0.08
 auto_pose_hud = {"active": False, "x": 0.0, "y": 0.0, "yaw": 0.0}
 takeoff_busy = False
 last_flip_t = 0.0
+hover_target_height_cm = None
+hover_idle_since_t = time.time()
+hover_last_sample_t = 0.0
 
 roi_pending       = False
 roi_pending_bbox  = None
@@ -851,8 +1209,12 @@ ui_panel_visible = False
 rc_lr = 0; rc_fb = 0; rc_ud = 0; rc_yv = 0
 rc_lock    = threading.Lock()
 rc_running = True
-RC_HZ = 80.0
+RC_HZ = 45.0
+RC_IDLE_HZ = 20.0
+RC_LOW_BAT_HZ = 32.0
 RC_DT = 1.0 / RC_HZ
+RC_IDLE_DT = 1.0 / RC_IDLE_HZ
+RC_LOW_BAT_DT = 1.0 / RC_LOW_BAT_HZ
 
 
 def note_link_ok():
@@ -891,7 +1253,7 @@ def note_link_fail(reason=""):
 def rc_sender_loop():
     while rc_running:
         # Otonom veya acil durumda sadece bekle, rc degerlerine dokunma
-        if emergency or auto_running or mode != 0 or takeoff_busy:
+        if emergency or auto_running or mode != 0 or takeoff_busy or calibration_busy:
             time.sleep(RC_DT)
             continue
         # Manuel mod: ana dongunun yazdigi degerleri gonder
@@ -899,7 +1261,14 @@ def rc_sender_loop():
             lr = int(rc_lr); fb = int(rc_fb)
             ud = int(rc_ud); yv = int(rc_yv)
         send_rc_control_safe(lr, fb, ud, yv, reason="rc_sender")
-        time.sleep(RC_DT)
+        idle_rc = (lr == 0 and fb == 0 and ud == 0 and yv == 0)
+        if idle_rc:
+            sleep_dt = RC_IDLE_DT
+        else:
+            bat_now = battery_level
+            low_bat = POWER_SAVE_ENABLED and bat_now >= 0 and bat_now <= POWER_SAVE_BAT_LOW
+            sleep_dt = RC_LOW_BAT_DT if low_bat else RC_DT
+        time.sleep(sleep_dt)
 
 
 def recover_stream(reason=""):
@@ -1108,18 +1477,30 @@ def draw_vision_overlay(frame_bgr, now_ts):
         )
 
 def do_flip(direction):
-    global last_flip_t
+    global last_flip_t, battery_level
     now = time.time()
     if now - last_flip_t < FLIP_COOLDOWN_SEC:
         return
     if not safe_is_flying(): toast("Takla icin once havalanin!"); return
-    last_flip_t = now
+    bat_now = safe_get_battery(battery_level if battery_level >= 0 else -1)
+    if bat_now != -1:
+        battery_level = bat_now
+    if bat_now != -1 and bat_now < FLIP_MIN_BATTERY:
+        toast(f"Takla iptal: pil dusuk ({bat_now}%)", 1.8)
+        return
+    pre_flip_height = ensure_flip_ready_height()
+    if pre_flip_height <= 0:
+        return
+    last_flip_t = time.time()
     try:
         stop_and_hover()
-        time.sleep(0.15)
-        run_sdk_command(lambda: tello.flip(direction))
+        time.sleep(0.25)
+        result = run_sdk_command(lambda: tello.flip(direction))
+        if result is False:
+            raise RuntimeError("SDK flip cevabi basarisiz")
+        stabilize_after_flip(pre_flip_height)
         names = {'l': 'SOL', 'r': 'SAG', 'f': 'ILERI', 'b': 'GERI'}
-        toast(f"TAKLA: {names.get(direction, direction)}")
+        toast(f"TAKLA: {names.get(direction, direction)} | DENGELEME")
     except Exception as e:
         last_flip_t = 0.0
         toast(f"Takla hata: {e}")
@@ -1144,8 +1525,7 @@ def start_manual_takeoff():
             toast("KALKIS BASLADI", 1.2)
             ok = fast_takeoff()
             if ok:
-                settle_manual_takeoff_height()
-                h_now = int(round(safe_get_height_cm(MANUAL_TAKEOFF_HOVER_CM)))
+                h_now = int(round(calibrate_hover_target_from_current()))
                 toast(f"KALKIS {h_now}cm", 1.4)
             else:
                 toast("Kalkis zaman asimi")
@@ -1158,6 +1538,125 @@ def start_manual_takeoff():
         threading.Thread(target=_worker, daemon=True).start()
     except Exception:
         takeoff_busy = False
+        raise
+
+
+def _prompt_calibration_float(prompt, min_value, max_value):
+    try:
+        raw = input(prompt).strip().replace(",", ".")
+    except EOFError:
+        return None
+    if not raw:
+        return None
+    value = _parse_positive_float(raw)
+    if value is None or value < min_value or value > max_value:
+        print(f"[CALIBRATION] Gecersiz deger: {raw} ({min_value:.0f}-{max_value:.0f} arasi olmali)")
+        return None
+    return value
+
+
+def _run_calibration_motion(lr=0, fb=0, ud=0, yv=0, duration_sec=1.0):
+    tick_sec = 0.05
+    start_t = time.time()
+    while time.time() - start_t < duration_sec:
+        if emergency or not safe_is_flying():
+            break
+        send_rc_control_safe(lr, fb, ud, yv, reason="calibration_rc", report_fail=False, report_success=True)
+        time.sleep(tick_sec)
+    stop_and_hover()
+    time.sleep(0.45)
+
+
+def start_motion_calibration():
+    global calibration_busy
+    if calibration_busy:
+        toast("Kalibrasyon zaten calisiyor")
+        return
+    if auto_running or takeoff_busy:
+        toast("Kalibrasyon icin otonom/kalkis bitsin")
+        return
+    if emergency:
+        toast("Kalibrasyon icin once M ile normale don")
+        return
+    if not safe_is_flying():
+        toast("Kalibrasyon icin once V ile kalkis yap")
+        return
+
+    calibration_busy = True
+
+    def _worker():
+        global DIST_100_SEC, DIST_200_SEC, DIST_300_SEC, ROT_90_SEC
+        global AUTO_ROUTE_STEPS, calibration_busy
+        try:
+            stop_and_hover()
+            print("")
+            print("[CALIBRATION] Basladi.")
+            print("[CALIBRATION] Drone havada ve onunde bos alan olmali.")
+            print(f"[CALIBRATION] Mevcut: 1m={DIST_100_SEC:.2f}s, 90deg={ROT_90_SEC:.2f}s")
+
+            input("[CALIBRATION] Ileri test icin Enter'a basin...")
+            if emergency or not safe_is_flying():
+                return
+            toast("KALIBRASYON: ileri test", CALIBRATION_FORWARD_SAMPLE_SEC + 0.8)
+            _run_calibration_motion(
+                fb=AUTO_FWD_SPEED,
+                duration_sec=CALIBRATION_FORWARD_SAMPLE_SEC,
+            )
+            forward_cm = _prompt_calibration_float(
+                "[CALIBRATION] Drone kac cm ileri gitti? (bos=degistirme): ",
+                CALIBRATION_MIN_FORWARD_CM,
+                CALIBRATION_MAX_FORWARD_CM,
+            )
+
+            input("[CALIBRATION] Donus test icin Enter'a basin...")
+            if emergency or not safe_is_flying():
+                return
+            toast("KALIBRASYON: donus test", CALIBRATION_YAW_SAMPLE_SEC + 0.8)
+            _run_calibration_motion(
+                yv=AUTO_YAW_SPEED,
+                duration_sec=CALIBRATION_YAW_SAMPLE_SEC,
+            )
+            yaw_deg = _prompt_calibration_float(
+                "[CALIBRATION] Drone kac derece saga dondu? (bos=degistirme): ",
+                CALIBRATION_MIN_YAW_DEG,
+                CALIBRATION_MAX_YAW_DEG,
+            )
+
+            forward_cmps = None
+            yaw_dps = None
+            if forward_cm is not None:
+                forward_cmps = forward_cm / CALIBRATION_FORWARD_SAMPLE_SEC
+                DIST_100_SEC = 100.0 / forward_cmps
+                DIST_200_SEC = 200.0 / forward_cmps
+                DIST_300_SEC = 300.0 / forward_cmps
+            if yaw_deg is not None:
+                yaw_dps = yaw_deg / CALIBRATION_YAW_SAMPLE_SEC
+                ROT_90_SEC = 90.0 / yaw_dps
+
+            if forward_cm is None and yaw_deg is None:
+                toast("Kalibrasyon degismedi", 1.5)
+                print("[CALIBRATION] Deger girilmedi, kayit yapilmadi.")
+                return
+
+            payload = save_motion_calibration(forward_cmps=forward_cmps, yaw_dps=yaw_dps)
+            AUTO_ROUTE_STEPS = rebuild_auto_route_steps()
+            stop_and_hover()
+            toast(f"KALIBRASYON KAYDEDILDI | 1m {DIST_100_SEC:.2f}s 90 {ROT_90_SEC:.2f}s", 2.6)
+            print(f"[CALIBRATION] Kaydedildi: {CALIBRATION_FILE}")
+            print(f"[CALIBRATION] {payload}")
+        except EOFError:
+            toast("Kalibrasyon terminal girisi yok", 2.0)
+        except Exception as exc:
+            toast(f"Kalibrasyon hata: {exc}", 2.0)
+            print(f"[CALIBRATION] Hata: {exc}")
+        finally:
+            stop_and_hover()
+            calibration_busy = False
+
+    try:
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception:
+        calibration_busy = False
         raise
 
 
@@ -1215,7 +1714,7 @@ def autonomous_worker():
             return -1
 
     def cm_to_duration(distance_cm, speed_cmd):
-        return max(0.35, float(abs(distance_cm)) / max(1.0, float(abs(speed_cmd))))
+        return linear_cm_to_duration(distance_cm, speed_cmd)
 
     def rotate_precise(label, clockwise=True, degrees=90):
         global auto_step_label
@@ -1231,13 +1730,13 @@ def autonomous_worker():
                 run_sdk_command(lambda: tello.rotate_counter_clockwise(int(degrees)))
         except Exception:
             yaw_cmd = AUTO_YAW_SPEED if clockwise else -AUTO_YAW_SPEED
-            return move_timed(yv_spd=yaw_cmd, duration_sec=ROT_90_SEC, label=label)
+            return move_timed(yv_spd=yaw_cmd, duration_sec=yaw_degrees_to_duration(degrees), label=label)
         send_rc(0, 0, 0, 0)
         time.sleep(0.25)
         return not should_abort()
 
     def update_pose_estimate(pose, action, speed, duration_sec):
-        distance_cm = float(abs(speed) * duration_sec)
+        distance_cm = linear_distance_for_duration(speed, duration_sec)
         yaw_rad = np.deg2rad(pose["yaw"])
         fwd_x = np.cos(yaw_rad)
         fwd_y = np.sin(yaw_rad)
@@ -1551,16 +2050,16 @@ if __name__ == "__main__":
             print(f"[VISION] Devre disi: {vision_last_error}")
 
     last_speed_force_t = 0.0
-    SPEED_FORCE_EVERY  = 3.0
+    SPEED_FORCE_EVERY  = 10.0
 
-    toast("Hazir | F foto | P vision | TAB panel | V kalkis | R otonom", 3.0)
+    toast("Hazir | F foto | V kalkis | R otonom", 3.0)
 
     try:
         while True:
             loop_start = time.time()
             now        = time.time()
 
-            if mode == 0 and (not takeoff_busy) and (now - last_speed_force_t > SPEED_FORCE_EVERY):
+            if mode == 0 and (not takeoff_busy) and (not calibration_busy) and (now - last_speed_force_t > SPEED_FORCE_EVERY):
                 last_speed_force_t = now
                 force_sdk_speed_max()
 
@@ -1609,6 +2108,9 @@ if __name__ == "__main__":
                 pressed_once = [k for k in pressed_once if k in ('space','o','ö','m','tab')]
     
             # --- Tuş işleme ---
+            if calibration_busy:
+                pressed_once = [k for k in pressed_once if k in ('space','tab','c')]
+
             if auto_running and photo_requested and 'f' not in pressed_once:
                 pressed_once.append('f')
             for k in dedupe_key_events(pressed_once):
@@ -1624,7 +2126,7 @@ if __name__ == "__main__":
     
                 elif k == 'v' and not auto_running:
                     start_manual_takeoff()
-    
+
                 elif k == 'f':
                     save_photo(frame_disp.copy())
     
@@ -1633,7 +2135,9 @@ if __name__ == "__main__":
                     except Exception as e: toast(f"Inis hata: {e}")
     
                 elif k == 'h' and not auto_running:
-                    stop_and_hover(); toast("HOVER")
+                    stop_and_hover()
+                    reset_hover_hold_target()
+                    toast("HOVER")
     
                 elif k == 'p' and not auto_running:
                     if vision_enabled:
@@ -1745,6 +2249,7 @@ if __name__ == "__main__":
     
             # --- TAKİP ---
             if mode == 1 and not emergency and not auto_running:
+                motion_scale = power_save_motion_scale(battery_level)
                 if tracker_on and tracker is not None:
                     ok_t, bbox = False, None
                     try:
@@ -1808,6 +2313,11 @@ if __name__ == "__main__":
                                 fb = int(fb_prev_cmd)
                             else:
                                 fb = 0; fb_prev_cmd = 0
+
+                            if motion_scale < 0.999:
+                                yv = scale_axis_cmd(yv, motion_scale)
+                                ud = scale_axis_cmd(ud, motion_scale)
+                                fb = scale_axis_cmd(fb, motion_scale)
     
                     if (not ok_t) or (bbox is None):
                         stop_and_hover(); lr = fb = ud = yv = 0
@@ -1847,17 +2357,23 @@ if __name__ == "__main__":
     
             # --- MANUEL ---
             elif mode == 0 and not emergency and not auto_running:
-                if key_down('w'): fb =  MAX_SPEED
-                if key_down('s'): fb = -MAX_SPEED
-                if key_down('a'): lr = -MAX_SPEED
-                if key_down('d'): lr =  MAX_SPEED
-                if key_down('q'): yv = -MAX_SPEED
-                if key_down('e'): yv =  MAX_SPEED
-                if key_down('z'): ud =  MAX_SPEED
-                if key_down('x'): ud = -MAX_SPEED
+                axis_speed = manual_axis_speed_from_battery(battery_level)
+                if key_down('w'): fb =  axis_speed
+                if key_down('s'): fb = -axis_speed
+                if key_down('a'): lr = -axis_speed
+                if key_down('d'): lr =  axis_speed
+                if key_down('q'): yv = -axis_speed
+                if key_down('e'): yv =  axis_speed
+                if key_down('z'): ud =  axis_speed
+                if key_down('x'): ud = -axis_speed
+
+                manual_input_active = any((lr, fb, ud, yv))
+                hover_ud = compute_manual_hover_ud(now, manual_input_active)
+                if (not manual_input_active) and hover_ud != 0:
+                    ud = int(hover_ud)
     
             # --- RC GONDER ---
-            if emergency or auto_running:
+            if emergency or auto_running or calibration_busy:
                 with rc_lock: rc_lr = rc_fb = rc_ud = rc_yv = 0
             elif mode == 1:
                 send_rc_control_safe(int(lr), int(fb), int(ud), int(yv), reason="track_rc")
@@ -1888,8 +2404,8 @@ if __name__ == "__main__":
             draw_cinematic_overlay(frame_disp)
             draw_vision_overlay(frame_disp, now)
     
-            state_txt = "ACIL" if emergency else ("KALKIS" if takeoff_busy else ("OTONOM" if auto_running else "NORMAL"))
-            mode_txt  = "OTONOM" if auto_running else ("TAKIP" if mode==1 else "MANUEL")
+            state_txt = "ACIL" if emergency else ("KALIB" if calibration_busy else ("KALKIS" if takeoff_busy else ("OTONOM" if auto_running else "NORMAL")))
+            mode_txt  = "KALIB" if calibration_busy else ("OTONOM" if auto_running else ("TAKIP" if mode==1 else "MANUEL"))
             lock_txt  = "KILIT:ON" if lock_enabled else "KILIT:OFF"
             fb_txt    = "FB:ON"    if fb_active     else "FB:OFF"
             battery_txt = format_battery_text(bat)
@@ -1907,8 +2423,8 @@ if __name__ == "__main__":
             else:
                 vision_state_txt = "VISION:OFF"
                 vision_bg = (34, 28, 20)
-            state_color = (0, 0, 255) if emergency else (0, 175, 255) if takeoff_busy else (0, 214, 255) if auto_running else (0, 180, 118)
-            accent_color = (0, 214, 255) if auto_running or takeoff_busy else (162, 235, 81)
+            state_color = (0, 0, 255) if emergency else (0, 168, 255) if calibration_busy else (0, 175, 255) if takeoff_busy else (0, 214, 255) if auto_running else (0, 180, 118)
+            accent_color = (0, 214, 255) if auto_running or takeoff_busy or calibration_busy else (162, 235, 81)
     
             draw_reticle_modern(frame_disp, ww//2, hh//2, accent=accent_color)
             if vision_enabled and vision_last_target is not None:
@@ -1989,6 +2505,7 @@ if __name__ == "__main__":
                 "V kalkis | N inis | H hover",
                 "F foto",
                 "WASD QE ZX manuel",
+                "I/K/J/L takla",
                 "G ROI | ENTER takip",
                 "R otonom | O/Ö iptal",
                 "P vision | M manuel",
@@ -2023,3 +2540,4 @@ if __name__ == "__main__":
         try: run_sdk_command(tello.streamoff)
         except: pass
         cv2.destroyAllWindows()
+
